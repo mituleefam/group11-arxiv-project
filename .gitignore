@@ -1,0 +1,17 @@
+# Crawled data, working files and logs never go into the code repository
+data/
+corpus/
+work/
+logs/
+*.tmp
+
+# Secrets (Semantic Scholar API key, etc.)
+.env
+*.key
+
+# Python / Jupyter
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
