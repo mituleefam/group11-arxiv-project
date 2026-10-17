@@ -1,0 +1,8 @@
+name: arxiv
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11.5
+  - pip
+  - pip:
+    - -r src/requirements.txt
