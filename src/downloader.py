@@ -56,8 +56,9 @@ SRC_URL = "https://export.arxiv.org/src/{versioned_id}"
 CONNECT_TIMEOUT = 15   # seconds to open the connection
 READ_TIMEOUT = 120     # seconds without receiving any byte before giving up
 CHUNK = 1024 * 1024    # stream the body 1 MB at a time
-MAX_HTTP_ATTEMPTS = 5  # per download: network errors, 429 and 5xx (backoff 3, 6, 12, 24 s)
+MAX_HTTP_ATTEMPTS = 5  # per download: failed requests in a row with no new byte (backoff 3, 6, 12, 24 s)
 FIRST_BACKOFF = 3.0    # seconds before the first retry, doubled after each one
+MAX_REQUESTS = 30      # per download, counting the requests that resumed a broken body
 MAX_DOWNLOADS = 3      # per version and run: downloads of a body that turned out cut off
 # Stop the stage when this many versions in a row fail: arXiv is probably
 # blocking us (403) or unreachable, and going on would only add failures.
@@ -92,6 +93,23 @@ class Download:
     error: str = ""
 
 
+def _content_range_start_total(header: str | None) -> tuple[int | None, int | None]:
+    """Parse a Content-Range header such as "bytes 12582912-19714924/19714925".
+
+    Returns (first byte, full size); either is None when it is missing or
+    unreadable ("*" as the size means the server does not know it).
+    """
+    if not header:
+        return None, None
+    try:
+        unit, spec = header.split(" ", 1)
+        span, full = spec.split("/", 1)
+        first = int(span.split("-", 1)[0]) if unit == "bytes" and span != "*" else None
+        return first, int(full) if full.strip().isdigit() else None
+    except ValueError:
+        return None, None
+
+
 def fetch_source(session: requests.Session, versioned_id: str, target: Path, *,
                  limiter: RateLimiter = ARXIV,
                  max_attempts: int = MAX_HTTP_ATTEMPTS) -> Download:
@@ -102,51 +120,97 @@ def fetch_source(session: requests.Session, versioned_id: str, target: Path, *,
     size. The bytes are saved exactly as sent (no automatic gunzip), so
     extractor.py sees the real format and the size is the real download size.
 
-    Network errors, a body shorter than its Content-Length, HTTP 429 and 5xx
-    are retried with a doubling backoff (or the server's Retry-After). Other
-    statuses such as 404 or 403 are returned at once: retrying won't help.
+    Resuming: when the connection breaks in the middle of the body, the next
+    request asks only for the missing part (HTTP `Range: bytes=<saved>-`)
+    and appends it, instead of downloading the whole file again. `If-Range`
+    carries the ETag / Last-Modified of the first answer, so if the file
+    changed on the server in between, the server sends the whole new file
+    (HTTP 200) and the download restarts from zero. A server that ignores
+    Range also answers 200, which simply restarts the download. Each of
+    these requests goes through the limiter like any other.
+
+    Retries: network errors, a body shorter than its Content-Length, HTTP 429
+    and 5xx are retried with a doubling backoff (or the server's Retry-After).
+    `max_attempts` counts the requests that brought no new byte; a request
+    that made progress does not use one up (at most MAX_REQUESTS requests in
+    total). Other statuses such as 404 or 403 are returned at once.
     """
     url = SRC_URL.format(versioned_id=versioned_id)
     target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        target.unlink()  # never resume from a file left by an earlier run
     started = time.perf_counter()
     backoff = FIRST_BACKOFF
     status, size, error = None, 0, ""
+    total: int | None = None      # full size of the file, once known
+    validator: str | None = None  # ETag or Last-Modified of the first answer
+    requests_made, without_progress = 0, 0
 
-    for attempt in range(1, max_attempts + 1):
-        retry_after = 0.0
+    while requests_made < MAX_REQUESTS and without_progress < max_attempts:
+        requests_made += 1
+        retry_after, before, error, status = 0.0, size, "", None
+        headers = {}
+        if size > 0:
+            headers["Range"] = f"bytes={size}-"
+            if validator:
+                headers["If-Range"] = validator
         with limiter:
-            status, size, error = None, 0, ""
             try:
-                with session.get(url, stream=True,
+                with session.get(url, stream=True, headers=headers,
                                  timeout=(CONNECT_TIMEOUT, READ_TIMEOUT)) as response:
                     status = response.status_code
                     retry_after = _retry_after_seconds(response)
-                    if status == 200:
-                        expected = response.headers.get("Content-Length")
-                        with open(target, "wb") as f:
+                    mode = None
+                    if status == 200:  # whole file (first request, or Range not honoured)
+                        size, mode = 0, "wb"
+                        length = response.headers.get("Content-Length", "")
+                        total = int(length) if length.isdigit() else None
+                        validator = response.headers.get("ETag") or response.headers.get("Last-Modified")
+                    elif status == 206 and size > 0:  # the missing part only
+                        first, full = _content_range_start_total(response.headers.get("Content-Range"))
+                        if first == size:
+                            mode = "ab"
+                            total = full if full is not None else total
+                        else:
+                            error = f"unexpected Content-Range {response.headers.get('Content-Range')!r}"
+                    elif status == 416:  # range not satisfiable: start again from zero
+                        error = "HTTP 416"
+                    else:
+                        error = f"HTTP {status}"
+                    if mode is not None:
+                        with open(target, mode) as f:
                             # decode_content=False: keep gzip bytes as they are.
                             for chunk in response.raw.stream(CHUNK, decode_content=False):
                                 f.write(chunk)
                                 size += len(chunk)
-                        if expected is not None and expected.isdigit() and size != int(expected):
-                            error = f"incomplete body: {size} of {expected} bytes"
-                        elif size == 0:
-                            error = "empty body"
-                    else:
-                        error = f"HTTP {status}"
             except (requests.RequestException, Urllib3Error, OSError) as exc:
                 # Errors while streaming response.raw come straight from urllib3.
                 error = f"{type(exc).__name__}: {exc}"
 
         if not error:
-            return Download(True, status, size, attempt, round(time.perf_counter() - started, 3))
-        if status is not None and status != 200 and status not in RETRY_STATUS:
+            if total is not None and size < total:
+                error = f"incomplete body: {size} of {total} bytes"
+            elif total is not None and size > total:
+                error, size = f"body longer than announced: {size} of {total} bytes", 0
+            elif size == 0:
+                error = "empty body"
+            else:
+                return Download(True, status, size, requests_made,
+                                round(time.perf_counter() - started, 3))
+        if status == 416 or error.startswith("unexpected Content-Range"):
+            size, total, validator = 0, None, None  # resuming failed: next request from zero
+        if status is not None and status not in (200, 206, 416) and status not in RETRY_STATUS:
             break  # 404, 403...: a new request would get the same answer
-        if attempt < max_attempts:
+        if size > before:
+            without_progress, backoff = 0, FIRST_BACKOFF  # progress: resume right away
+            continue
+        without_progress += 1
+        if without_progress < max_attempts:
             time.sleep(max(backoff, retry_after))
             backoff *= 2
 
-    return Download(False, status, size, attempt, round(time.perf_counter() - started, 3), error)
+    return Download(False, status, size, requests_made,
+                    round(time.perf_counter() - started, 3), error)
 
 
 def _remove(path: Path) -> None:
