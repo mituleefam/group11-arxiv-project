@@ -227,3 +227,100 @@ Size reduction from removing figures: `1 - kept_bytes / original_bytes`.
 - **Semantic Scholar:** 1 request per second with an API key, one every 3.1 s
   without (100 requests per 5 minutes); HTTP 429 and 5xx are retried with
   exponential backoff.
+
+  
+## 7. Data Validation and Performance Analysis (Role 4)
+
+Role 4 provides three modules for validating the collected
+corpus, measuring crawler performance, and computing statistics
+for the Milestone 1 report.
+
+### 7.1. Data Validation
+
+Run the validation tool after collecting data:
+
+```bash
+python src/validate.py --data-dir data
+```
+
+Output:
+
+- `data/logs/validation_report.csv`
+
+Validation results include:
+
+- PASS: the check passed.
+- WARN: the result requires further inspection.
+- PENDING: data is missing or processing is incomplete.
+- FAIL: the data failed a validation check.
+
+Validation covers paper metadata, version coverage,
+source files, and reference data.
+
+### 7.2. Corpus Statistics
+
+Generate statistics from the current corpus:
+
+```bash
+python src/corpus_statistics.py --data-dir data
+```
+
+Output:
+
+- `data/logs/summary_statistics.csv`
+
+The statistics include paper coverage, version coverage,
+source statuses, reference completeness, and data sizes.
+
+The module reads the stored corpus state and avoids
+double-counting historical retry records.
+
+### 7.3. Performance Benchmark
+
+Run a benchmark on Google Colab with CPU-only runtime:
+
+```bash
+python src/benchmark.py \
+  --data-dir data \
+  --interval 2 \
+  --disk-interval 30 \
+  -- python src/main.py \
+  --start START_ID \
+  --end END_ID \
+  --data-dir data
+```
+
+Replace START_ID and END_ID with the assigned arXiv IDs.
+
+Benchmark outputs:
+
+- `performance_samples_<run_id>.csv`
+- `performance_summary_<run_id>.json`
+
+These files are stored under `data/logs/`.
+
+The benchmark records end-to-end wall time, sampled RAM
+usage, and sampled data-directory size.
+
+Sampled peaks may not capture short-lived resource peaks.
+
+For interrupted runs, each execution must be reported
+separately. A resumed run is not equivalent to a fresh
+full-pipeline benchmark.
+
+### 7.4. Data and API Limitations
+
+The collected corpus and logs are stored outside the
+source-code repository.
+
+Semantic Scholar API errors, including HTTP 429, are
+recorded as incomplete reference collection rather than
+successful results.
+
+Source HTTP 404 responses are recorded separately and
+should not automatically be classified as PDF-only.
+
+The validation and statistics outputs describe the
+current dataset state; they do not guarantee that all
+papers and references were successfully collected.
+
