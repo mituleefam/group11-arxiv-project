@@ -229,98 +229,191 @@ Size reduction from removing figures: `1 - kept_bytes / original_bytes`.
   exponential backoff.
 
   
-## 7. Data Validation and Performance Analysis (Role 4)
+## 7. Data Validation, Statistics, and Benchmarking (Role 4)
 
-Role 4 provides three modules for validating the collected
-corpus, measuring crawler performance, and computing statistics
-for the Milestone 1 report.
+Role 4 **audits and measures** the Milestone 1 crawler. These scripts do not modify or repair paper source files or silently change the outcomes of arXiv/Semantic Scholar requests. Run them from the repository root. **Keep raw data, logs, API keys, Google Drive credentials, and `.env` files out of GitHub.**
 
-### 7.1. Data Validation
+### 7.1. Role 4 source files and responsibilities
 
-Run the validation tool after collecting data:
+| File | Function | Writes to the data directory? | Requires network/API key? |
+| --- | --- | --- | --- |
+| `src/validate.py` | Audit manifest, official IDs, metadata, every version's source files, `kept_files`, reference documents, incomplete arXiv dates, and leftover temporary files. | Yes: `logs/validation_report.csv` (unless `--output` overrides). Does not repair corpus. | No |
+| `src/corpus_statistics.py` | Compute paper/version coverage, source sizes, collection and metadata success rates, reference counts with explicit denominators, Discovery time logged, and optional timing metrics. | Yes: `logs/summary_statistics.csv`. | No |
+| `src/benchmark.py` | Launch and monitor a command; sample process-tree RAM, remote data-directory size, local disk use, end-to-end invocation wall time and progress/heartbeat. | Yes: `performance_*` logs. | Only if the child command uses an API |
+| `src/benchmark_runs.py` | Summarize multiple benchmark invocations and detect heartbeat files with no finished summary. Distinguish new runs from resumed/incomplete runs. | Yes: `benchmark_runs_overview.csv` and `.json`. | No |
+| `src/per_paper_benchmark.py` | Run an independent **fresh full-pipeline** experiment for each selected paper and report its observed elapsed wall time. | Yes: dedicated corpus folders, `paper_timings.csv` and `per_paper_summary.json`. | **Yes**, when actually running arXiv/Semantic Scholar |
+| `src/test_role4.py` | Offline regression tests for the tools and input/output validation contracts. | Temporary test directories only. | No |
+
+**Other owners:** `main.py`, Discovery, Metadata, Download/Extraction/Checkpoint and Semantic Scholar crawling remain owned by their respective members. A Validation warning does not automatically mean Role 4 caused the error.
+
+### 7.2. Clone and install
+
+Requirements: Python 3.11 or a Python version supported by the current group's dependencies, Git, and access to the shared repository. Do not assume an old Colab runtime will have the same versions as your laptop.
 
 ```bash
-python src/validate.py --data-dir data
+# Clone once. Replace the URL if the team renames its repository.
+git clone https://github.com/mituleefam/group11-arxiv-project.git
+cd group11-arxiv-project
+
+# Create an isolated environment (Windows PowerShell: .venv\\Scripts\\Activate.ps1)
+python -m venv .venv
+# macOS/Linux only:
+source .venv/bin/activate
+
+python -m pip install -r src/requirements.txt
+python -m pip check
+python -m unittest discover -s src -p 'test_role4.py' -v
 ```
 
-Output:
+On Windows PowerShell, replace the `source ...` line with `.\.venv\Scripts\Activate.ps1`. `psutil` is required by the benchmark tools; keep it in `src/requirements.txt`. If `pip check` reports a Colab dependency conflict, resolve the pinned versions with the group and rerun tests. Do not ignore dependency warnings during the official performance measurement.
 
-- `data/logs/validation_report.csv`
+**Existing clone:** Before pulling, save/commit your uncommitted work on your own branch. Then run `git fetch origin`, update your local `main` with `git switch main` and `git pull --ff-only origin main`, and return to your feature branch as needed. Do not overwrite other members' uncommitted files.
 
-Validation results include:
+### 7.3. Data layout and Semantic Scholar compatibility
 
-- PASS: the check passed.
-- WARN: the result requires further inspection.
-- PENDING: data is missing or processing is incomplete.
-- FAIL: the data failed a validation check.
+Point all Role 4 tools to the exact same **DATA_DIR** used by the crawler:
 
-Validation covers paper metadata, version coverage,
-source files, and reference data.
-
-### 7.2. Corpus Statistics
-
-Generate statistics from the current corpus:
-
-```bash
-python src/corpus_statistics.py --data-dir data
+```text
+DATA_DIR/
+├── work/
+│   ├── paper_manifest.jsonl
+│   ├── ref_arxiv_dates.jsonl       # new Member 3 append-only cache
+│   └── ref_arxiv_dates.json        # optional legacy cache; still readable by Member 3
+├── corpus/
+│   └── <yymm-id>/
+│       ├── metadata.json
+│       ├── versions.json
+│       ├── v1/, v2/, ...           # retained .tex/.bib trees
+│       ├── references_all.json    # complete S2 reference list and arxiv_dates_complete flag
+│       └── references.json        # only cited papers carrying an arXiv ID
+└── logs/
+    ├── run_log.csv
+    ├── download_log.csv
+    ├── references_log.csv
+    └── ...
 ```
 
-Output:
+Member 3's revised `references.py` saves the same two reference JSON structures as before. Reference metadata uses `ref_arxiv_id`, `ref_title`, `ref_authors`, `ref_submission_date`, `ref_s2_id`, and `metadata_status` (`complete` / `incomplete` / `unresolved`), plus supplementary fields. `arxiv_dates_complete` is a **separate boolean**: `success` for S2 references does **not** imply the cited arXiv submission dates have been filled. Role 4 compares both the keys **and the values** of `references.json` against `references_all.json`, and its strict full-pipeline completion metric requires `arxiv_dates_complete=true`.
 
-- `data/logs/summary_statistics.csv`
+Reference statuses must be distinguished: `success` (nonempty references), `empty` (genuine zero), `unavailable`, `not_found`, and `api_error` (API failure; Member 3 deliberately does not write a finished JSON). A missing reference JSON after HTTP 429 is **unknown**, not zero. When using `--no-arxiv-dates` in Member 3, the arXiv date requirement remains outstanding; do **not** treat such an experiment as a completed full-pipeline per-paper benchmark.
 
-The statistics include paper coverage, version coverage,
-source statuses, reference completeness, and data sizes.
+An API key is not needed for Role 4's **offline** commands. When a real pipeline needs Semantic Scholar, ask the group to supply `S2_API_KEY` via environment variables or Colab Secrets, **never in code/README/commit**. Member 3 manages rate limiting, retries and the pending-date worker.
 
-The module reads the stored corpus state and avoids
-double-counting historical retry records.
+### 7.4. Validate the existing corpus (no HTTP calls)
 
-### 7.3. Performance Benchmark
-
-Run a benchmark on Google Colab with CPU-only runtime:
+First inspect a small sample without overwriting the full validation report:
 
 ```bash
-python src/benchmark.py \
-  --data-dir data \
-  --interval 2 \
-  --disk-interval 30 \
+python src/validate.py --data-dir DATA_DIR \
+  --max-papers 20 --progress-every 5 \
+  --output validation_smoke_20.csv
+```
+
+Then, **after all crawler processes stop**, validate the full dataset:
+
+```bash
+python src/validate.py --data-dir DATA_DIR \
+  --expected-count 5000 --finished --progress-every 100
+```
+
+`5000` is an illustrative **per-member range size**, not a hard-coded requirement. Checking a count cannot establish that the IDs match the official assignment. For that, have the group supply `official_ids.txt` with one valid arXiv ID per line, and instead run:
+
+```bash
+python src/validate.py --data-dir DATA_DIR \
+  --assigned-ids official_ids.txt --finished --progress-every 100
+```
+
+Report: `DATA_DIR/logs/validation_report.csv`, columns `arxiv_id,version,check_name,status,error_message`.
+
+| Check status | Interpretation |
+| --- | --- |
+| `PASS` | The particular check passed. **Not** a guarantee every requirement is met. |
+| `WARN` | Requires an explanation or manual review, e.g. pending cited arXiv dates or a verified 404 exception. |
+| `PENDING` | Missing or incomplete work, e.g. S2 HTTP 429 caused a missing references document. |
+| `FAIL` | Structural/content validation failure (missing files, zero-byte source, inconsistent reference values). |
+
+Use `--strict` only for an audit gate: it returns a nonzero exit code if any `PENDING` or `FAIL` exists. Do **not** relabel 404 or missing references just to force a green result. `--verified-404 reviewed.csv` requires genuine prior manual verification and does not recover the source. `--verify-hashes` is meaningful only when Member 2 has recorded archive-time SHA-256 hashes; hashing an already-written file alone is not provenance verification.
+
+### 7.5. Corpus statistics (no HTTP calls)
+
+```bash
+python src/corpus_statistics.py --data-dir DATA_DIR
+# Stronger when an independently verified ID file is available:
+python src/corpus_statistics.py --data-dir DATA_DIR --assigned-ids official_ids.txt
+```
+
+Output: `DATA_DIR/logs/summary_statistics.csv` (`metric,value,unit,description`). Important distinctions:
+
+- `papers_pipeline_core_complete`: completed source/metadata/S2 reference collection; cited arXiv dates may still be pending.
+- `papers_pipeline_complete_strict`: also requires `arxiv_dates_complete=true` (Member 3's new schema).
+- `reference_collection_success_rate_found`: papers with `success` or true `empty` references / discovered papers.
+- `reference_metadata_complete_rate`: complete **S2 metadata per reference**, not the proportion of papers with citation dates.
+- `mean_references_per_references_document`: conditional average over valid `success` or `empty` documents, **including genuine empty documents as zero**. Papers with HTTP 429 are not silently counted as zero.
+- `discovery_total_logged_stage_seconds`: time reported in completed stage logs; interruptions may leave missing measurements.
+
+If Member 3 changes source/reference fields, re-run validation and examine the output schema before reporting final statistics. Do not sum CSV retry rows as if each row were a different paper.
+
+### 7.6. Benchmark and how to interpret it
+
+**Test the instrumentation without using the network:**
+
+```bash
+python src/benchmark.py --data-dir /tmp/role4_smoke \
+  --interval 1 --disk-interval 5 --heartbeat-seconds 3 \
+  -- python -c "import time; time.sleep(4)"
+python src/benchmark_runs.py --logs-dir /tmp/role4_smoke/logs
+```
+
+The four-second sleep proves that the wrapper can record observations; it **is not a crawler benchmark**. On Windows, replace `/tmp/role4_smoke` with a writable Windows path.
+
+**Final experiment: run on Google Colab, CPU-only** (Runtime → Change runtime type → Hardware accelerator: None). Mount the data location. The crawler must execute within an agreed arXiv/S2 request schedule:
+
+```bash
+python src/benchmark.py --data-dir DATA_DIR \
+  --interval 2 --disk-interval 300 --heartbeat-seconds 60 \
   -- python src/main.py \
-  --start START_ID \
-  --end END_ID \
-  --data-dir data
+  --start START_ID --end END_ID --data-dir DATA_DIR
 ```
 
-Replace START_ID and END_ID with the assigned arXiv IDs.
+Keep `START_ID`, `END_ID` and `DATA_DIR` consistent, and use a **fresh directory** to report a fresh end-to-end crawl. A run with `--limit` or without the references stage is only a partial test. If the Colab runtime stops, restart the crawler with the **same** data directory for checkpoint/resume, but record it as a **separate benchmark invocation**. Keep all invocation summaries and their run IDs. Then:
 
-Benchmark outputs:
+```bash
+python src/benchmark_runs.py --logs-dir DATA_DIR/logs
+```
 
-- `performance_samples_<run_id>.csv`
-- `performance_summary_<run_id>.json`
+Benchmark outputs (under `DATA_DIR/logs`): `performance_samples_<run_id>.csv`, `performance_progress_<run_id>.json`, `performance_summary_<run_id>.json`, and `benchmark_runs_overview.csv/.json`. Progress files from crashed invocations are **partial evidence**, not finished benchmarks.
 
-These files are stored under `data/logs/`.
+Report **invocation** wall time separately from the total project duration. Sampled RAM mean/peak and disk measurements have sampling and remote-Google-Drive I/O limitations; the local Colab disk-used metric is not necessarily the bytes created by the crawler. Do not call the sum of overlapping runs or resumed runs a single fresh full-pipeline wall time.
 
-The benchmark records end-to-end wall time, sampled RAM
-usage, and sampled data-directory size.
+### 7.7. Fresh end-to-end timing of individual sample papers
 
-Sampled peaks may not capture short-lived resource peaks.
+When APIs are operational and the team has approved the requests:
 
-For interrupted runs, each execution must be reported
-separately. A resumed run is not equivalent to a fresh
-full-pipeline benchmark.
+```bash
+python src/per_paper_benchmark.py \
+  --output-root FRESH_SAMPLE_DIR \
+  --ids PAPER_ID_1 PAPER_ID_2 \
+  --interval 5 --disk-interval 300
+```
 
-### 7.4. Data and API Limitations
+The command runs an independent, fresh *entire pipeline* per paper. It writes `paper_timings.csv` and `per_paper_summary.json`. `complete` requires valid source, Semantic Scholar data **and** completed cited arXiv dates. An S2 result without completed arXiv dates is marked incomplete, not successful.
 
-The collected corpus and logs are stored outside the
-source-code repository.
+This is **not** the observed per-paper latency inside a concurrent 25,000-paper crawl. With a measured sample CSV, optionally add its distribution to the statistics:
 
-Semantic Scholar API errors, including HTTP 429, are
-recorded as incomplete reference collection rather than
-successful results.
+```bash
+python src/corpus_statistics.py --data-dir DATA_DIR \
+  --paper-timings FRESH_SAMPLE_DIR/paper_timings.csv \
+  --benchmark-summary DATA_DIR/logs/performance_summary_SELECTED_RUN_ID.json
+```
 
-Source HTTP 404 responses are recorded separately and
-should not automatically be classified as PDF-only.
+Choose only a benchmark summary matching the experiment being described; do not divide a resumed wall time by all assigned IDs. If the report needs true per-paper latency during bulk parallel crawling, Member 1–3 must coordinate event/timestamp instrumentation within `main.py` and the crawling stages; Role 4 can define the measurement and check its logs.
 
-The validation and statistics outputs describe the
-current dataset state; they do not guarantee that all
-papers and references were successfully collected.
+### 7.8. Team workflow, hand-off and Milestone 1 report
 
+1. **Coder:** fetch latest approved code, run offline unit tests and a small end-to-end smoke test, and preserve the Git commit SHA.
+2. **Crawler operator:** run on one authorized Colab CPU instance using the official assigned ID ranges; keep source checkpoints and log each interrupted/resumed invocation.
+3. **Role 4:** validate the stored corpus only after it is quiescent, compute statistics, and consolidate benchmark summaries. Never invent missing reference data, change `not_found` to `pdf_only`, or change file content to silence Validation.
+4. **Other owners:** Member 2 resolves source integrity/missing-file problems; Member 3 resolves S2 HTTP 429 and incomplete `ref_submission_date` acquisition; Member 1 supplies the official ID mapping and coordinates timing if required.
+5. **Report owner:** generate tables/figures **during Jupyter Book build** in the separate report repository, showing denominators, sample sizes, environment, Git commit, run IDs, interruptions, unresolved exceptions and distinct wall/RAM/disk measures.
+
+**Delivery:** commit source code and documented commands to this repository, and publish the separate Jupyter Book report. Keep the crawled dataset and large logs off the source GitHub repository. The README explains how to reproduce the code; it is not a claim that all source 404 / S2 429 cases were fixed.
