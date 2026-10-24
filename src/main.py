@@ -19,6 +19,7 @@ Outputs under --data-dir (keep it outside the code repository):
     corpus/<yymm-id>/references.json  references (references.py, Member 3)
     logs/arxiv_api_log.csv         one row per arXiv API call
     logs/run_log.csv               start, end and duration of every stage
+    logs/arxiv_throttle_log.csv    pauses after HTTP 429 from arXiv (rate_limiter.py)
 
 The download and references stages run at the same time: they talk to
 different servers (arXiv and Semantic Scholar), each with its own rate limit.
@@ -45,7 +46,7 @@ from concurrent.futures import ThreadPoolExecutor
 from common import SUCCESS, CsvLog, DataLayout, Manifest, now_iso
 from discovery import API_LOG_FIELDS, RangeBound, discover_range, known_records
 from metadata import collect_metadata
-from rate_limiter import DEFAULT_USER_AGENT, make_session
+from rate_limiter import ARXIV, DEFAULT_USER_AGENT, THROTTLE_LOG_FIELDS, make_session
 
 STAGES = ("discovery", "metadata", "download", "references")
 PARALLEL_STAGES = {"download": "downloader", "references": "references"}  # stage -> module
@@ -145,6 +146,7 @@ def main(argv=None) -> int:
     manifest = Manifest(layout.manifest)
     api_log = CsvLog(layout.logs / "arxiv_api_log.csv", API_LOG_FIELDS)
     run_log = CsvLog(layout.logs / "run_log.csv", RUN_LOG_FIELDS)
+    ARXIV.log = CsvLog(layout.logs / "arxiv_throttle_log.csv", THROTTLE_LOG_FIELDS)
     session = make_session(args.user_agent)
     run_id = now_iso()
     print(f"Range {start.as_id()} .. {end.as_id()} | data: {layout.root} | stages: {', '.join(args.stages)}")
@@ -187,6 +189,9 @@ def main(argv=None) -> int:
             for future in futures:
                 future.result()  # re-raise any error from a stage
 
+    if ARXIV.throttle_count:
+        print(f"arXiv answered HTTP 429 {ARXIV.throttle_count} times; requests were paused "
+              f"{ARXIV.paused_seconds:.0f} s in total (logs/arxiv_throttle_log.csv)")
     return 0
 
 
