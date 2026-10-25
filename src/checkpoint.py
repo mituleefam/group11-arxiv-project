@@ -67,13 +67,18 @@ class VersionStore:
         return self.data["versions"].get(version)
 
     def is_final(self, version: str) -> bool:
-        """True when `version` is finished and its folder is still on disk,
-        so it must be skipped (and never overwritten)."""
+        """True when `version` is finished and its folder, with every file of
+        `kept_files`, is still on disk, so it must be skipped (and never
+        overwritten). On Google Drive a Colab crash can lose files written just
+        before it while versions.json was already saved: such a version is
+        processed again."""
         record = self.get(version)
         if record is None or record.get("status") not in FINAL_STATUSES:
             return False
         if record["status"] in STATUSES_WITH_FOLDER:
-            return (self.paper_dir / version).is_dir()
+            folder = self.paper_dir / version
+            return folder.is_dir() and all(
+                (folder / name).is_file() for name in record.get("kept_files", []))
         return True
 
     def previous_attempts(self, version: str) -> int:

@@ -33,6 +33,7 @@ other files. The compressed download size is measured by downloader.py.
 
 from __future__ import annotations
 
+import errno
 import gzip
 import re
 import shutil
@@ -56,6 +57,9 @@ IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".
 CHUNK = 1024 * 1024  # copy files 1 MB at a time, so RAM stays low on big sources
 TEXT_SNIFF_BYTES = 64 * 1024
 WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
+# Disk or Google Drive quota full: never skip the file as if only its name were
+# a problem, or the version would be saved as success with files missing.
+DISK_FULL = {errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC)}
 
 
 class IncompleteSourceError(Exception):
@@ -281,6 +285,8 @@ def _extract_tar(path: Path, dest: Path, result: ExtractionResult) -> None:
                 try:
                     _write_member(source, target, member.size)
                 except OSError as exc:  # e.g. a name Windows does not allow
+                    if exc.errno in DISK_FULL:
+                        raise  # stop the crawl: every following version would fail too
                     result.skipped.append({"name": member.name, "reason": f"write failed: {exc}"})
     except (EOFError, zlib.error) as exc:
         raise IncompleteSourceError(f"archive ends too early: {exc}") from exc
@@ -316,6 +322,8 @@ def _extract_zip(path: Path, dest: Path, result: ExtractionResult) -> None:
                     try:
                         _write_member(source, target, info.file_size)
                     except OSError as exc:
+                        if exc.errno in DISK_FULL:
+                            raise
                         result.skipped.append({"name": info.filename,
                                                "reason": f"write failed: {exc}"})
     except zipfile.BadZipFile as exc:
