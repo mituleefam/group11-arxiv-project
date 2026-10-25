@@ -14,6 +14,7 @@ import argparse
 import csv
 import json
 from collections import Counter
+import hashlib
 from pathlib import Path, PurePosixPath
 
 from validate import load_manifest, read_ids_file
@@ -51,6 +52,9 @@ def analyze(root: Path, benchmark_summary: Path | None = None, assigned_ids: set
     n_ref_papers = n_ref_succeeded = n_ref_dates_pending = n_ref_dates_unknown = 0
     source_seconds_per_paper = []
     n_invalid_source_versions = 0
+    n_zero_byte_versions = 0
+    n_zero_byte_unverified_versions = 0
+    n_zero_byte_hash_mismatch_versions = 0
 
     for rec in existing:
         arxiv_id = rec["arxiv_id"]
@@ -72,7 +76,8 @@ def analyze(root: Path, benchmark_summary: Path | None = None, assigned_ids: set
             status = v.get("status", "missing")
             download_status[status] += 1
             folder_exists = (paper / version).is_dir()
-            # A success record with missing or empty kept files is not truly complete.
+            # A successful extraction may legitimately contain a zero-byte file.
+            # An absent file or incorrect recorded byte count is not acceptable.
             valid_files = True
             if status == "success" and folder_exists:
                 names = v.get("kept_files")
@@ -91,9 +96,24 @@ def analyze(root: Path, benchmark_summary: Path | None = None, assigned_ids: set
                             actual = {p.relative_to(paper / version).as_posix()
                                       for p in (paper / version).rglob("*") if p.is_file() and not p.is_symlink()}
                             valid_files = (actual == set(names) and all(f.is_file() and not f.is_symlink()
-                                           and f.stat().st_size > 0 for f in kept)
+                                           for f in kept)
                                            and isinstance(v.get("kept_bytes"), int)
                                            and sum(f.stat().st_size for f in kept) == v["kept_bytes"])
+                            if valid_files:
+                                zero_names = [name for name, file in zip(names, kept)
+                                              if file.stat().st_size == 0]
+                                if zero_names:
+                                    n_zero_byte_versions += 1
+                                    hashes = v.get("sha256_by_file")
+                                    hashes = hashes if isinstance(hashes, dict) else {}
+                                    empty_digest = hashlib.sha256(b"").hexdigest()
+                                    if any(name not in hashes for name in zero_names):
+                                        n_zero_byte_unverified_versions += 1
+                                    if any(name in hashes and
+                                           str(hashes[name]).lower() != empty_digest
+                                           for name in zero_names):
+                                        n_zero_byte_hash_mismatch_versions += 1
+                                        valid_files = False
                         else:
                             valid_files = False
                     except (OSError, ValueError):
@@ -153,7 +173,10 @@ def analyze(root: Path, benchmark_summary: Path | None = None, assigned_ids: set
     add("assigned_ids_expected", len(assigned_ids) if assigned_ids is not None else None, "ids", "From provided official ID list only")
     add("assigned_ids_missing_from_manifest", len(assigned_ids - set(manifest)) if assigned_ids is not None else None,
         "ids", "Number of official assigned IDs missing in manifest")
-    add("source_versions_with_invalid_kept_files", n_invalid_source_versions, "versions", "Source success records with missing/zero-byte/mismatched source files")
+    add("source_versions_with_invalid_kept_files", n_invalid_source_versions, "versions", "Source success records with missing/mismatched files or integrity hashes")
+    add("source_versions_with_zero_byte_files", n_zero_byte_versions, "versions", "Versions containing zero-byte .tex/.bib; can be legitimate")
+    add("source_versions_with_unverified_zero_byte_files", n_zero_byte_unverified_versions, "versions", "Zero-byte versions lacking archive-time hash verification; include in operational handling coverage but not verified-integrity claims")
+    add("source_versions_with_zero_byte_hash_mismatch", n_zero_byte_hash_mismatch_versions, "versions", "Zero-byte versions conflicting with recorded archive-time hashes; excluded from source completion")
     add("discovery_success_papers", len(existing), "papers", "Manifest papers marked success")
     add("discovery_not_found", discovery["not_found"], "ids", "Manifest latest records marked not_found")
     add("discovery_api_error", discovery["api_error"], "ids", "Manifest latest records marked api_error")

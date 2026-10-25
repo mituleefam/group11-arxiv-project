@@ -242,10 +242,31 @@ def validate(data_dir: Path, expected_ids: set[str] | None = None,
                 invalid_version = True
                 add(arxiv_id, version, "source_empty", "FAIL", f"{status} should have an empty directory")
             if status == "success":
-                zero_bytes = [str(f.relative_to(folder)) for f in files if f.is_file() and f.stat().st_size == 0]
+                # A zero-byte file can be faithful to the source archive. Treat it
+                # as an integrity warning unless an archive-time SHA-256 exists.
+                zero_bytes = [f.relative_to(folder).as_posix() for f in files
+                              if f.is_file() and not f.is_symlink() and f.stat().st_size == 0]
                 if zero_bytes:
-                    invalid_version = True
-                    add(arxiv_id, version, "zero_byte_source", "FAIL", f"Empty files: {zero_bytes[:6]}")
+                    source_hashes = state.get("sha256_by_file")
+                    source_hashes = source_hashes if isinstance(source_hashes, dict) else {}
+                    empty_digest = hashlib.sha256(b"").hexdigest()
+                    verified = [name for name in zero_bytes
+                                if str(source_hashes.get(name, "")).lower() == empty_digest]
+                    mismatched = [name for name in zero_bytes
+                                  if name in source_hashes and
+                                  str(source_hashes[name]).lower() != empty_digest]
+                    unverified = [name for name in zero_bytes
+                                  if name not in source_hashes]
+                    if verified:
+                        add(arxiv_id, version, "zero_byte_source", "PASS",
+                            f"Zero-byte contents match archive-time SHA-256: {verified[:6]}")
+                    if unverified:
+                        add(arxiv_id, version, "zero_byte_source", "WARN",
+                            f"Zero-byte files not verified against the original archive: {unverified[:6]}")
+                    if mismatched:
+                        invalid_version = True
+                        add(arxiv_id, version, "zero_byte_source", "FAIL",
+                            f"Zero-byte files mismatch archive-time SHA-256: {mismatched[:6]}")
             recorded = state.get("kept_files")
             if status == "success":
                 if not isinstance(recorded, list):
