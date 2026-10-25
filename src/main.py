@@ -19,11 +19,17 @@ Outputs under --data-dir (keep it outside the code repository):
     corpus/<yymm-id>/references.json  references (references.py, Member 3)
     logs/arxiv_api_log.csv         one row per arXiv API call
     logs/run_log.csv               start, end and duration of every stage
-    logs/arxiv_throttle_log.csv    pauses after HTTP 429 from arXiv (rate_limiter.py)
+    logs/arxiv_throttle_log.csv    pauses after arXiv refused or did not answer (rate_limiter.py)
+    work/crawler.lock              present while a crawler runs on this folder
 
 The download and references stages run at the same time: they talk to
 different servers (arXiv and Semantic Scholar), each with its own rate limit.
 Re-running the same command is safe: every stage skips finished work.
+Pressing Stop (Ctrl+C) ends the run at once; the interrupted work is redone
+by the next run. If arXiv refuses every request for --max-wait-minutes (30 by
+default), the run stops with exit code 3 and says what to do (see
+rate_limiter.ArxivUnavailable). Only one crawler may use a data folder at a time: a second
+one refuses to start while work/crawler.lock is fresh (see common.RunLock).
 
 Contract with the other modules. downloader.py and references.py each expose
 
@@ -38,15 +44,17 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import sys
+import threading
 import time
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
 
-from common import SUCCESS, CsvLog, DataLayout, Manifest, now_iso
+from common import SUCCESS, CsvLog, DataLayout, Manifest, RunLock, now_iso
 from discovery import API_LOG_FIELDS, RangeBound, discover_range, known_records
 from metadata import collect_metadata
-from rate_limiter import ARXIV, DEFAULT_USER_AGENT, THROTTLE_LOG_FIELDS, make_session
+from rate_limiter import (ARXIV, DEFAULT_USER_AGENT, THROTTLE_LOG_FIELDS, ArxivUnavailable,
+                          make_session)
 
 STAGES = ("discovery", "metadata", "download", "references")
 PARALLEL_STAGES = {"download": "downloader", "references": "references"}  # stage -> module
@@ -70,7 +78,15 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="IDs per arXiv API call (default: 100)")
     parser.add_argument("--user-agent", default=DEFAULT_USER_AGENT,
                         help="User-Agent header sent to arXiv")
+    parser.add_argument("--force", action="store_true",
+                        help="start even if work/crawler.lock says another crawler uses this "
+                             "data folder (only when you are sure it has stopped)")
+    parser.add_argument("--max-wait-minutes", type=float, default=30.0,
+                        help="stop when arXiv has refused every request for this long "
+                             "(default: 30; e.g. 120 for an unattended night run; 0: never stop)")
     args = parser.parse_args(argv)
+    if args.max_wait_minutes < 0:
+        parser.error("--max-wait-minutes must be 0 or more")
 
     if args.sheet_range and (args.start or args.end):
         parser.error("use either --range or --start/--end, not both")
@@ -137,16 +153,65 @@ def run_timed(stage: str, func, papers: list[dict], layout: DataLayout,
         func(papers, layout)
 
 
+def run_parallel(runners: dict, papers: list[dict], layout: DataLayout,
+                 run_log: CsvLog, run_id: str) -> None:
+    """Run the download and references stages at the same time.
+
+    Daemon threads with short joins rather than a ThreadPoolExecutor: when the
+    user presses Stop (Ctrl+C) the main thread gets control back at once and
+    the program can end, instead of the executor waiting for every remaining
+    download. Work cut off this way is redone by the next run.
+    """
+    errors: list[BaseException] = []
+
+    def stage_thread(stage, func):
+        try:
+            run_timed(stage, func, papers, layout, run_log, run_id)
+        except BaseException as exc:  # handed over to the main thread below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=stage_thread, args=item, name=item[0], daemon=True)
+               for item in runners.items()]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        while thread.is_alive():
+            thread.join(timeout=1.0)  # short waits keep Ctrl+C responsive
+    if errors:
+        raise errors[0]
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
-    start, end = args.start, args.end
-
     layout = DataLayout(args.data_dir)
     layout.create()
+    lock = RunLock(layout.work / "crawler.lock")
+    try:
+        lock.acquire(force=args.force)
+    except RuntimeError as exc:
+        print(f"Not started: {exc}")
+        return 2
+    try:
+        return crawl(args, layout)
+    except KeyboardInterrupt:
+        print("\nStopped by the user. Finished papers and versions are saved; "
+              "run the same command again to continue.", flush=True)
+        return 130
+    except ArxivUnavailable as exc:
+        print(f"\nStopped: {exc}", flush=True)
+        return 3
+    finally:
+        lock.release()
+
+
+def crawl(args: argparse.Namespace, layout: DataLayout) -> int:
+    """Run the selected stages for the range of `args` (see the module docstring)."""
+    start, end = args.start, args.end
     manifest = Manifest(layout.manifest)
     api_log = CsvLog(layout.logs / "arxiv_api_log.csv", API_LOG_FIELDS)
     run_log = CsvLog(layout.logs / "run_log.csv", RUN_LOG_FIELDS)
     ARXIV.log = CsvLog(layout.logs / "arxiv_throttle_log.csv", THROTTLE_LOG_FIELDS)
+    ARXIV.give_up_after = args.max_wait_minutes * 60
     session = make_session(args.user_agent)
     run_id = now_iso()
     print(f"Range {start.as_id()} .. {end.as_id()} | data: {layout.root} | stages: {', '.join(args.stages)}")
@@ -183,17 +248,18 @@ def main(argv=None) -> int:
     runners = {stage: load_stage(stage) for stage in PARALLEL_STAGES if stage in args.stages}
     runners = {stage: func for stage, func in runners.items() if func is not None}
     if runners:
-        with ThreadPoolExecutor(max_workers=len(runners)) as pool:
-            futures = [pool.submit(run_timed, stage, func, papers, layout, run_log, run_id)
-                       for stage, func in runners.items()]
-            for future in futures:
-                future.result()  # re-raise any error from a stage
+        run_parallel(runners, papers, layout, run_log, run_id)
 
     if ARXIV.throttle_count:
-        print(f"arXiv answered HTTP 429 {ARXIV.throttle_count} times; requests were paused "
-              f"{ARXIV.paused_seconds:.0f} s in total (logs/arxiv_throttle_log.csv)")
+        print(f"arXiv refused or did not answer {ARXIV.throttle_count} times; requests were "
+              f"paused {ARXIV.paused_seconds:.0f} s in total (logs/arxiv_throttle_log.csv)")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    if code == 130:
+        # Stopped by the user: end now instead of waiting for the stage threads.
+        sys.stdout.flush()
+        os._exit(code)
+    sys.exit(code)
