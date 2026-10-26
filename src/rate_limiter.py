@@ -13,23 +13,31 @@ server capacity and total number of users, not to individual usage", that a
 Using more machines or IP addresses to get around it is forbidden by the
 Terms of Use (https://info.arxiv.org/help/api/tou.html).
 
-Retrying one request a few seconds later is not enough: the next download
-would start at once, be refused too, and a whole chain of versions would
-fail. So on a 429 or 503 the limiter pauses *every* arXiv request for a
-cool-down (60 s, doubled at each new refusal up to 5 minutes, longer if the
-server sends Retry-After) and spaces requests 6 s apart until 30 requests in
-a row have succeeded. A request that gets no answer at all (network down,
-DNS failure, server silent) is handled the same way. When arXiv always
-answers, nothing changes: requests stay 3 s apart.
+Waiting counts in the measured runtime, so the limiter waits only when it
+helps, and only as long as needed (exponential backoff with a cap, the same
+principle as the tenacity and backoff libraries; the pause here is shared by
+every module and thread, which those per-call decorators do not provide):
+
+  * HTTP 429 (arXiv overloaded): every request would be refused, so *every*
+    arXiv request pauses: 15 s, doubled at each new 429 up to 5 minutes, or
+    longer if the server sends Retry-After. The pace is not slowed afterwards,
+    since the cause is the total load, not our rate.
+  * HTTP 503 (excessive use) or no answer at all (network down, DNS failure,
+    server silent): a single failing file is only retried by its caller, while
+    the other downloads go on; it does not stop the crawl. When two different
+    URLs fail within 2 minutes the problem is general: every request pauses as
+    above, and after a 503 requests are spaced 6 s apart until 30 in a row
+    have succeeded.
+  * Any normal answer ends a run of refusals.
 
 arXiv never says how long it will keep refusing. The pauses are therefore not
 a guess of when the refusal ends, but how often one single request checks
-whether it has ended: about 1, 3, 7, 12, 17, 22 and 27 minutes after the first
-refusal, then every 5 minutes. If arXiv has refused or not answered every
-request for `give_up_after` seconds (30 minutes by default, set with
-main.py --max-wait-minutes), ArxivUnavailable is raised: the crawl stops with
-a clear message instead of waiting for hours, and everything finished so far
-stays saved.
+whether it has ended: about 0.25, 0.75, 1.75, 3.75, 7.75 and 12.75 minutes
+after the first refusal, then every 5 minutes. If arXiv has refused or not
+answered every request for `give_up_after` seconds (30 minutes by default, set
+with main.py --max-wait-minutes), ArxivUnavailable is raised: the crawl stops
+with a clear message instead of waiting for hours, and everything finished so
+far stays saved.
 
 Sessions from make_session() report every arXiv answer and every failed
 connection to `ARXIV` (a response hook and a transport adapter), so the
@@ -53,8 +61,6 @@ RETRY_STATUS = {429, 500, 502, 503, 504}
 
 # Answers from these hosts are reported to ARXIV (see make_session).
 ARXIV_HOSTS = ("arxiv.org",)
-# arXiv answers that make ARXIV pause: too many requests, server unavailable.
-PAUSE_STATUS = {429, 503}
 
 # Columns of logs/arxiv_throttle_log.csv: one row per pause or recovery, so the
 # report can tell time lost to arXiv refusals from the crawler's own time.
@@ -78,29 +84,35 @@ class RateLimiter:
     The interval is counted from the start of the previous request: if a
     download already took 7 seconds, the next request starts immediately.
 
-    With `cooldown` > 0 the limiter also reacts to HTTP 429/503: throttled()
-    pauses every request for the cool-down and switches to `slow_interval`;
-    succeeded() brings the normal pace back after `recover_after` successful
-    requests in a row. With the default cooldown=0 both calls do nothing.
-    With `give_up_after` > 0, entering the limiter raises ArxivUnavailable once
-    every request has been refused for that many seconds.
+    With `cooldown` > 0 the limiter also reacts to refusals: throttled()
+    pauses every request for the cool-down (and, with slow_down=True, switches
+    to `slow_interval`); failed() reports a failure that may concern one URL
+    only and calls throttled() when two different URLs fail within
+    `isolation_window` seconds; succeeded() ends a run of refusals and brings
+    the normal pace back after `recover_after` successful requests in a row.
+    With the default cooldown=0 these calls do nothing. With `give_up_after`
+    > 0, entering the limiter raises ArxivUnavailable once every request has
+    been refused for that many seconds.
     """
 
     def __init__(self, min_interval: float, *, cooldown: float = 0.0,
                  max_cooldown: float = 0.0, slow_interval: float | None = None,
                  recover_after: int = 30, give_up_after: float = 0.0,
-                 name: str = "limiter"):
+                 isolation_window: float = 120.0, name: str = "limiter"):
         self.min_interval = min_interval
-        self.interval = min_interval  # current spacing, slower after a 429/503
+        self.interval = min_interval  # current spacing, slower after a general 503
         self.cooldown = cooldown
         self.max_cooldown = max(max_cooldown, cooldown)
         self.slow_interval = max(slow_interval or min_interval, min_interval)
         self.recover_after = recover_after
         self.give_up_after = give_up_after
+        self.isolation_window = isolation_window
         self.name = name
         self.log = None  # optional CsvLog with THROTTLE_LOG_FIELDS (set by main.py)
-        self.throttle_count = 0      # HTTP 429/503 answers seen
+        self.throttle_count = 0      # refusals that paused every request
+        self.isolated_count = 0      # failures of a single URL (no pause)
         self.paused_seconds = 0.0    # total time all requests were held back
+        self._last_failure = None    # (url, time) of the latest single-URL failure
         self._lock = threading.Lock()   # one request at a time
         self._state = threading.Lock()  # pause bookkeeping, held only briefly
         self._last_start = float("-inf")
@@ -129,11 +141,12 @@ class RateLimiter:
         self._lock.release()
         return False
 
-    def throttled(self, retry_after: float = 0.0, url: str = "", reason: str = "HTTP 429") -> None:
-        """The server refused a request (HTTP 429 or 503) or did not answer:
-        hold back every request for the current cool-down (or Retry-After when
-        longer), double the next cool-down and slow the pace until requests
-        succeed again."""
+    def throttled(self, retry_after: float = 0.0, url: str = "", reason: str = "HTTP 429",
+                  slow_down: bool = False) -> None:
+        """Every request would be refused: hold back every request for the
+        current cool-down (or Retry-After when longer) and double the next
+        cool-down. With slow_down=True, requests are also spaced
+        `slow_interval` apart until `recover_after` of them have succeeded."""
         if not self.cooldown:
             return
         with self._state:
@@ -144,8 +157,10 @@ class RateLimiter:
             self.paused_seconds += until - max(self._paused_until, now)
             self._paused_until = until
             self._next_cooldown = min(self._next_cooldown * 2, self.max_cooldown)
-            self.interval = self.slow_interval
+            if slow_down:
+                self.interval = self.slow_interval
             self._successes = 0
+            self._last_failure = None
             self.throttle_count += 1
             if self._refused_since is None:
                 self._refused_since = now
@@ -158,6 +173,31 @@ class RateLimiter:
               f"(refused for {so_far} so far{limit})", flush=True)
         self._log("pause", reason, pause, total, url)
 
+    def failed(self, url: str, reason: str, retry_after: float = 0.0,
+               slow_down: bool = False) -> None:
+        """A request failed in a way that may concern this URL only (HTTP 503,
+        no answer). Its caller retries it with its own backoff while the other
+        requests go on. If a different URL failed too within
+        `isolation_window` seconds, the problem is general: throttled()."""
+        if not self.cooldown:
+            return
+        with self._state:
+            now = time.monotonic()
+            last = self._last_failure
+            general = (last is not None and last[0] != url
+                       and now - last[1] <= self.isolation_window)
+            self._last_failure = (url, now)
+            if not general:
+                self.isolated_count += 1
+            new_url = last is None or last[0] != url
+        if general:
+            self.throttled(retry_after, url, f"{reason} on several files", slow_down)
+            return
+        if new_url:
+            print(f"[{self.name}] {reason} for one file only: retrying it later, "
+                  f"the other requests go on", flush=True)
+        self._log("isolated", reason, 0, self.paused_seconds, url)
+
     def succeeded(self) -> None:
         """The server answered normally. After `recover_after` successes in a
         row the normal pace and the first cool-down length come back."""
@@ -165,6 +205,7 @@ class RateLimiter:
             return
         with self._state:
             self._refused_since = None  # any normal answer ends the run of refusals
+            self._last_failure = None   # and a later single failure is isolated again
             if self.interval == self.min_interval and self._next_cooldown == self.cooldown:
                 return  # already at the normal pace
             self._successes += 1
@@ -208,8 +249,9 @@ class RateLimiter:
 
 
 # The single limiter every module uses for arXiv (API and /src/ downloads).
-ARXIV = RateLimiter(min_interval=3.0, cooldown=60.0, max_cooldown=300.0,
-                    slow_interval=6.0, recover_after=30, give_up_after=1800.0, name="arXiv")
+ARXIV = RateLimiter(min_interval=3.0, cooldown=15.0, max_cooldown=300.0,
+                    slow_interval=6.0, recover_after=30, give_up_after=1800.0,
+                    isolation_window=120.0, name="arXiv")
 
 
 def _is_arxiv(url: str) -> bool:
@@ -222,19 +264,22 @@ def _is_arxiv(url: str) -> bool:
 def _report_to_arxiv_limiter(response, *args, **kwargs):
     """requests response hook: tell ARXIV how arXiv answered."""
     if _is_arxiv(response.url):
-        if response.status_code in PAUSE_STATUS:
-            ARXIV.throttled(_retry_after_seconds(response), response.url,
-                            f"HTTP {response.status_code}")
-        elif response.status_code < 400:
+        status = response.status_code
+        if status == 429:    # overloaded for everyone: pause every request
+            ARXIV.throttled(_retry_after_seconds(response), response.url, "HTTP 429")
+        elif status == 503:  # this file, or excessive use if it spreads
+            ARXIV.failed(response.url, "HTTP 503", _retry_after_seconds(response), slow_down=True)
+        elif status < 400:
             ARXIV.succeeded()
     return None  # keep the response unchanged
 
 
 class _ArxivAdapter(HTTPAdapter):
     """Transport adapter that also reports to ARXIV when arXiv gives no answer
-    at all (network down, DNS failure, no reply in time), so the following
-    requests wait for the cool-down instead of failing one after the other.
-    A connection cut while a body is being read is not reported: that error
+    at all (network down, DNS failure, no reply in time). One silent request
+    is retried by its caller; when different URLs keep failing, every request
+    waits for the cool-down instead of failing one after the other. A
+    connection cut while a body is being read is not reported: that error
     comes later, from reading the body, and downloader.py resumes the file."""
 
     def send(self, request, *args, **kwargs):
@@ -242,7 +287,7 @@ class _ArxivAdapter(HTTPAdapter):
             return super().send(request, *args, **kwargs)
         except (requests.ConnectionError, requests.Timeout) as exc:
             if _is_arxiv(request.url):
-                ARXIV.throttled(0.0, request.url, f"no answer ({type(exc).__name__})")
+                ARXIV.failed(request.url, f"no answer ({type(exc).__name__})")
             raise
 
 
