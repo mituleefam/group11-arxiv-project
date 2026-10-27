@@ -2,10 +2,10 @@
 
 references.py (Member 3) asks the arXiv API for the v1 date of every cited
 paper, 100 IDs per call: about 500 calls for a member's 5 000 papers, which
-cite some 50 000 distinct arXiv IDs. These calls share the one request every
-3 seconds allowed by arXiv with the source download, the slowest stage, and
-every HTTP 429 holds both back. arXiv's bulk data page
-(https://info.arxiv.org/help/bulk_data/index.html) lists Kaggle for its
+cite some 50 000 distinct arXiv IDs. These calls may come only one every 3
+seconds (arXiv's API terms), take turns with the source download within the
+export.arxiv.org pace, and every HTTP 429 holds both back. arXiv's bulk data
+page (https://info.arxiv.org/help/bulk_data/index.html) lists Kaggle for its
 metadata: arxiv-metadata-oai-snapshot.json in the Cornell-University/arxiv
 dataset, one JSON line per arXiv paper, published by arXiv itself. The date
 of the first version in it (versions[0].created) is the v1 date the API

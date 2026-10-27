@@ -28,10 +28,14 @@ Where the numbers come from (<data-dir>/logs unless noted):
                          not run the crawler under benchmark.py
     kaggle_dates_seconds ref_dates_kaggle.py runs (ref_dates_kaggle_log.csv),
                          already inside wall_seconds when run under benchmark.py
-    arxiv_requests       HTTP requests sent to arXiv: the attempts in
-                         arxiv_api_log.csv (API calls) and download_log.csv
-    arxiv_floor_seconds  arxiv_requests x 3 s, the shortest time arXiv's terms
-                         allow for these requests (one request every 3 s)
+    arxiv_requests       HTTP requests sent to arXiv: arxiv_api_requests (the
+                         attempts in arxiv_api_log.csv) plus
+                         arxiv_download_requests (the attempts in download_log.csv)
+    arxiv_floor_seconds  arxiv_api_requests x 3 s + arxiv_download_requests x
+                         0.5 s: the time these requests need at the pace arXiv
+                         asks for, sent one after the other (one API call every
+                         3 s; downloads in bursts of 4 per second, then 1 s; see
+                         rate_limiter.py)
     arxiv_pause_seconds  time every arXiv request was held back because arXiv
                          refused or did not answer (arxiv_throttle_log.csv)
     ram_*, data_dir_*    benchmark.py samples: RSS of the crawler's process
@@ -61,7 +65,7 @@ from benchmark_runs import aggregate
 from common import FAILED, NOT_FOUND, PDF_ONLY, SUCCESS, DataLayout, Manifest, now_iso
 from discovery import id_key
 from main import LEFT_KEYS
-from rate_limiter import ARXIV
+from rate_limiter import ARXIV, ARXIV_EXPORT
 
 VERSION_STATUSES = (SUCCESS, NOT_FOUND, PDF_ONLY, FAILED)
 KAGGLE_LOG = "ref_dates_kaggle_log.csv"  # written by ref_dates_kaggle.py
@@ -72,7 +76,8 @@ COLUMNS = (["member", "data_dir", "first_id", "last_id", "ids", "papers", "ids_n
            + ["versions_other", "downloaded_bytes", "kept_bytes", "invocations", "wall_seconds",
               "crawler_seconds", "passes", "kaggle_dates_seconds", "seconds_per_paper",
               "ram_peak_bytes", "ram_mean_bytes", "ram_samples", "data_dir_peak_bytes",
-              "data_dir_final_bytes", "arxiv_requests", "arxiv_floor_seconds",
+              "data_dir_final_bytes", "arxiv_requests", "arxiv_api_requests",
+              "arxiv_download_requests", "arxiv_floor_seconds",
               "arxiv_pause_seconds", "arxiv_pauses", "arxiv_isolated_failures",
               "arxiv_give_ups"] + [f"left_{k}" for k in LEFT_KEYS])
 HIGHEST = {"ram_peak_bytes", "data_dir_peak_bytes"}  # the group row keeps the highest; others are added
@@ -175,8 +180,11 @@ def member_row(name: str, root: Path, warnings: list[str]) -> dict:
     row["seconds_per_paper"] = run_seconds(row) / row["papers"] if row["papers"] else None
 
     api_calls = read_csv(logs / "arxiv_api_log.csv")
-    row["arxiv_requests"] = int(sum(number(r.get("attempts")) for r in api_calls + downloads))
-    row["arxiv_floor_seconds"] = row["arxiv_requests"] * ARXIV.min_interval
+    row["arxiv_api_requests"] = int(sum(number(r.get("attempts")) for r in api_calls))
+    row["arxiv_download_requests"] = int(sum(number(r.get("attempts")) for r in downloads))
+    row["arxiv_requests"] = row["arxiv_api_requests"] + row["arxiv_download_requests"]
+    row["arxiv_floor_seconds"] = (row["arxiv_api_requests"] * ARXIV.mean_interval
+                                  + row["arxiv_download_requests"] * ARXIV_EXPORT.mean_interval)
     pause, events = arxiv_pauses(read_csv(logs / "arxiv_throttle_log.csv"))
     row.update(arxiv_pause_seconds=pause, arxiv_pauses=events.get("pause", 0),
                arxiv_isolated_failures=events.get("isolated", 0),
@@ -244,8 +252,10 @@ def main(argv=None) -> int:
                             "invocations (empty when a member has none)",
             "wall_seconds_longest_member": "members crawl at the same time on separate runtimes: "
                                            "the group's data is ready after this time",
-            "arxiv_floor_seconds": f"arxiv_requests x {ARXIV.min_interval:g} s, the shortest time "
-                                   f"arXiv's terms allow for the requests that were sent",
+            "arxiv_floor_seconds": f"arxiv_api_requests x {ARXIV.mean_interval:g} s + "
+                                   f"arxiv_download_requests x {ARXIV_EXPORT.mean_interval:g} s: "
+                                   f"the time the requests that were sent need at the pace arXiv "
+                                   f"asks for, one after the other",
             "arxiv_pause_seconds": "time arXiv requests were held back after refusals",
             "seconds_per_paper": "wall_seconds / papers (crawler_seconds / papers when "
                                  "wall_seconds is unknown)",

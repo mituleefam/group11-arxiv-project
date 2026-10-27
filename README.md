@@ -13,7 +13,7 @@ src/
 ├── extractor.py     detect the source format
 ├── checkpoint.py    per-version state for resuming
 ├── references.py    references from the Semantic Scholar Graph API 
-├── rate_limiter.py  shared arXiv limiter: 3s between requests, one connection at a time
+├── rate_limiter.py  shared arXiv limiters: API 3 s apart on one connection, downloads in bursts
 ├── common.py        data layout, status codes, manifest, CSV logs
 └── requirements.txt
 environment.yml      conda environment (installs src/requirements.txt)
@@ -220,10 +220,19 @@ Size reduction from removing figures: `1 - kept_bytes / original_bytes`.
 
 ## 6. Rate limits
 
-- **arXiv:** at most one request every 3 seconds and one connection at a time,
-  enforced by the shared `rate_limiter.ARXIV` for every module (discovery,
-  metadata, source download, reference dates). Sources are fetched from
-  `export.arxiv.org`, never from `arxiv.org`.
+- **arXiv API** (discovery, metadata, reference dates): at most one request
+  every 3 seconds and one connection at a time, as the
+  [API Terms of Use](https://info.arxiv.org/help/api/tou.html) ask, enforced
+  by `rate_limiter.ARXIV`.
+- **arXiv source download** (`export.arxiv.org/src/`): the pace the
+  [bulk data page](https://info.arxiv.org/help/bulk_data.html#harvest) suggests
+  for harvesting `export.arxiv.org`, "bursts at 4 requests per second with a
+  1 second sleep, per burst". `rate_limiter.ARXIV_EXPORT` starts at most 4
+  requests 0.25 s apart, then none for 1 s (2 per second on average), with up
+  to 4 downloads open at once, and `downloader.py` works on 4 papers at a
+  time. The API calls count in this pace too, and every HTTP 429 pauses all
+  arXiv requests. Sources are fetched from `export.arxiv.org`, never from
+  `arxiv.org`.
 - **Semantic Scholar:** 1 request per second with an API key, one every 3.1 s
   without (100 requests per 5 minutes); HTTP 429 and 5xx are retried with
   exponential backoff.

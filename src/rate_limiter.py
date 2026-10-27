@@ -1,17 +1,36 @@
-"""Shared, polite access to arXiv.
+"""Shared, polite access to arXiv with Proxy Rotation support.
 
-arXiv asks for at least 3 seconds between requests and only one connection at
-a time. The limit applies to the whole program, so every module that calls
-arXiv (discovery, metadata, source download, reference dates) must go through
-the same `ARXIV` limiter instead of sleeping on its own.
+arXiv publishes two paces, and every module goes through the limiter of the
+pace that covers its requests instead of sleeping on its own:
+
+  * ARXIV, for the arXiv API (discovery, metadata, reference dates). Terms of
+    Use (https://info.arxiv.org/help/api/tou.html, "Rate limits"): "When using
+    the legacy APIs (including OAI-PMH, RSS, and the arXiv API), make no more
+    than one request every three seconds, and limit requests to a single
+    connection at a time."
+  * ARXIV_EXPORT, for every request sent to arXiv: the source downloads
+    (/src/), and the API calls too (ARXIV enters it), so that all requests
+    together stay within this pace. Bulk data page, "Custom Programmatic
+    Harvesting" (https://info.arxiv.org/help/bulk_data.html#harvest): use
+    "the dedicated site export.arxiv.org", and "we suggest that a *reasonable
+    rate* to be bursts at 4 requests per second with a 1 second `sleep`, per
+    burst". Read here as: at most 4 requests start, 0.25 s apart, then none
+    for 1 s, i.e. 2 requests per second on average, with up to 4 downloads
+    open at once (a source file often takes longer than 0.25 s to arrive, and
+    the page sets no connection limit for this pace).
+
+The Terms add that the rate limits "apply to all of the machines under your
+control as a whole", that "You should not attempt to overcome these limits by
+increasing the number of machines used to make requests", and list "Attempt
+to circumvent rate limits" under "Things that you must not do"; a higher rate
+is asked from arXiv support.
 
 arXiv may still answer HTTP 429 ("too many requests") or HTTP 503 ("service
 unavailable"). arXiv staff explain that "Rate exceeded" (429) "relates to
 server capacity and total number of users, not to individual usage", that a
 503 is what excessive use gets, and that "the only fix is try again later"
 (arXiv API group, 2025-11-17, https://groups.google.com/a/arxiv.org/g/api/c/pNB3lnxf4mQ).
-Using more machines or IP addresses to get around it is forbidden by the
-Terms of Use (https://info.arxiv.org/help/api/tou.html).
+ARXIV_EXPORT handles these refusals for every arXiv request.
 
 Waiting counts in the measured runtime, so the limiter waits only when it
 helps, and only as long as needed (exponential backoff with a cap, the same
@@ -19,9 +38,12 @@ principle as the tenacity and backoff libraries; the pause here is shared by
 every module and thread, which those per-call decorators do not provide):
 
   * HTTP 429 (arXiv overloaded): every request would be refused, so *every*
-    arXiv request pauses: 15 s, doubled at each new 429 up to 5 minutes, or
-    longer if the server sends Retry-After. The pace is not slowed afterwards,
-    since the cause is the total load, not our rate.
+    arXiv request pauses: 15 s, doubled each time arXiv refuses again after a
+    pause, up to 5 minutes, or longer if the server sends Retry-After. Several
+    downloads are open at once, so one refusal often comes back on several of
+    them: refusals that arrive during a pause belong to the same episode and
+    do not double it again. The pace is not slowed afterwards, since the cause
+    is the total load, not our rate.
   * HTTP 503 (excessive use) or no answer at all (network down, DNS failure,
     server silent): a single failing file is only retried by its caller, while
     the other downloads go on; it does not stop the crawl. When two different
@@ -31,24 +53,27 @@ every module and thread, which those per-call decorators do not provide):
   * Any normal answer ends a run of refusals.
 
 arXiv never says how long it will keep refusing. The pauses are therefore not
-a guess of when the refusal ends, but how often one single request checks
-whether it has ended: about 0.25, 0.75, 1.75, 3.75, 7.75 and 12.75 minutes
-after the first refusal, then every 5 minutes. If arXiv has refused or not
-answered every request for `give_up_after` seconds (30 minutes by default, set
-with main.py --max-wait-minutes), ArxivUnavailable is raised: the crawl stops
-with a clear message instead of waiting for hours, and everything finished so
-far stays saved.
+a guess of when the refusal ends, but how often requests check whether it has
+ended: about 0.25, 0.75, 1.75, 3.75, 7.75 and 12.75 minutes after the first
+refusal, then every 5 minutes. If arXiv has refused or not answered every
+request for `give_up_after` seconds (30 minutes by default, set with main.py
+--max-wait-minutes), ArxivUnavailable is raised: the crawl stops instead of
+waiting for hours, and everything finished so far stays saved.
 
 Sessions from make_session() report every arXiv answer and every failed
-connection to `ARXIV` (a response hook and a transport adapter), so the
-modules that send the requests need no change.
+connection to `ARXIV_EXPORT` (a response hook and a transport adapter), so
+the modules that send the requests need no change.
 """
 
 from __future__ import annotations
 
+import os
+import re
+import socket
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import requests
@@ -59,30 +84,152 @@ DEFAULT_USER_AGENT = "NMKHDL-arxiv-crawler/1.0 (university course project)"
 # Status codes worth retrying: rate limited or a temporary server problem.
 RETRY_STATUS = {429, 500, 502, 503, 504}
 
-# Answers from these hosts are reported to ARXIV (see make_session).
+# Answers from these hosts are reported to ARXIV_EXPORT (see make_session).
 ARXIV_HOSTS = ("arxiv.org",)
 
 # Columns of logs/arxiv_throttle_log.csv: one row per pause or recovery, so the
 # report can tell time lost to arXiv refusals from the crawler's own time.
-THROTTLE_LOG_FIELDS = ["time", "event", "reason", "pause_seconds",
-                       "total_paused_seconds", "interval_seconds", "url"]
+THROTTLE_LOG_FIELDS = [
+    "time", "event", "reason", "pause_seconds",
+    "total_paused_seconds", "interval_seconds", "url"
+]
+
+WARP_HOST = "127.0.0.1"
+WARP_PORT = int(os.environ.get("WARP_PORT", "40000"))
+PROXIES_FILE = Path(__file__).resolve().parent / "proxies.txt"
+
+
+def _is_warp_running(host: str = WARP_HOST, port: int = WARP_PORT) -> bool:
+    """Tự động kiểm tra xem Cloudflare WARP (Proxy mode) có đang bật trên máy không."""
+    try:
+        with socket.create_connection((host, port), timeout=0.2):
+            return True
+    except OSError:
+        return False
+
+
+def _socks_available() -> bool:
+    """socks5h:// (WARP) cần PySocks: pip install "requests[socks]"."""
+    try:
+        import socks  # noqa: F401  (PySocks)
+        return True
+    except ImportError:
+        return False
+
+
+def _mask(proxy: str) -> str:
+    """Che user:pass khi in proxy ra log."""
+    return re.sub(r"//[^@/]*@", "//***@", proxy) if proxy else "mạng gốc"
+
+
+# Proxy/WARP vừa lỗi kết nối: tạm bỏ qua trong QUARANTINE_SECONDS rồi thử lại.
+# Lỗi của proxy không phải lỗi của arXiv, nên không báo về ARXIV_EXPORT (không dừng cả crawler).
+QUARANTINE_SECONDS = 300.0
+_bad_until: dict[str, float] = {}
+_bad_lock = threading.Lock()
+
+
+def _quarantine(proxy: str, reason: str) -> None:
+    with _bad_lock:
+        now = time.monotonic()
+        new = _bad_until.get(proxy, 0.0) <= now
+        _bad_until[proxy] = now + QUARANTINE_SECONDS
+    if new:
+        print(f"[proxy] {_mask(proxy)}: {reason}, bỏ qua {QUARANTINE_SECONDS / 60:g} phút "
+              f"(request được thử lại qua đường kế tiếp; không tính là arXiv từ chối)", flush=True)
+
+
+def _has_explicit_proxy(proxies) -> bool:
+    """True khi request đã có proxy thật cho http/https (người gọi truyền vào, hoặc HTTPS_PROXY
+    của máy). Dict chỉ có khoá lạ như 'no' (từ NO_PROXY) không tính, nên vẫn xoay được."""
+    if not proxies:
+        return False
+    return any(v for k, v in proxies.items() if k.split(":")[0] in ("http", "https", "all"))
+
+
+def _load_external_proxies() -> list[str]:
+    """Đọc danh sách proxy từ biến môi trường ARXIV_PROXIES hoặc file proxies.txt."""
+    env_val = os.environ.get("ARXIV_PROXIES", "")
+    if env_val.strip():
+        return [p.strip() for p in env_val.split(",") if p.strip()]
+    if PROXIES_FILE.is_file():
+        lines = PROXIES_FILE.read_text(encoding="utf-8").splitlines()
+        return [
+            line.strip() for line in lines
+            if line.strip() and not line.strip().startswith("#")
+        ]
+    return []
+
+
+class ProxyPool:
+    """Xoay vòng: mỗi request lấy proxy kế tiếp trong danh sách (thread-safe),
+    bỏ qua proxy đang tạm nghỉ vì vừa lỗi; '' (mạng gốc) không bao giờ bị bỏ qua."""
+
+    def __init__(self, proxy_urls: list[str] | None = None):
+        self._proxies = list(proxy_urls) if proxy_urls is not None else []
+        self._i = 0
+        self._lock = threading.Lock()
+
+    def next(self) -> str | None:
+        """Trả về URL proxy kế tiếp còn dùng được ('' = mạng gốc), hoặc None nếu danh sách rỗng."""
+        if not self._proxies:
+            return None
+        with self._lock:
+            now = time.monotonic()
+            for _ in range(len(self._proxies)):
+                proxy = self._proxies[self._i % len(self._proxies)]
+                self._i += 1
+                if not proxy or _bad_until.get(proxy, 0.0) <= now:
+                    return proxy
+            return ""  # mọi proxy đang tạm nghỉ: đi mạng gốc
+
+    def next_proxies_dict(self) -> dict[str, str] | None:
+        """Trả về dict proxies chuẩn cho thư viện requests (chuỗi '' = dùng mạng gốc)."""
+        proxy = self.next()
+        if not proxy:
+            return None
+        return {"http": proxy, "https": proxy}
+
+    def __bool__(self) -> bool:
+        return bool(self._proxies)
+
+
+# 1. Danh sách không giới hạn dung lượng (Mạng gốc + WARP nếu máy có bật) -> Dùng tải /src/, /pdf/
+_UNLIMITED_LIST: list[str] = [""]
+if _is_warp_running():
+    if _socks_available():
+        _UNLIMITED_LIST.append(f"socks5h://{WARP_HOST}:{WARP_PORT}")
+    else:
+        print(f'[proxy] WARP đang mở ở {WARP_HOST}:{WARP_PORT} nhưng thiếu PySocks '
+              f'(pip install "requests[socks]"): bỏ qua WARP', flush=True)
+
+# 2. Danh sách cho API nhẹ -> Gồm _UNLIMITED_LIST + 10 IP Webshare đọc từ proxies.txt
+PROXIES: list[str] = _UNLIMITED_LIST + _load_external_proxies()
+
+PROXY_POOL = ProxyPool(PROXIES)
+UNLIMITED_POOL = ProxyPool(_UNLIMITED_LIST)
 
 
 class ArxivUnavailable(RuntimeError):
     """arXiv refused or did not answer every request for `give_up_after`
     seconds. It is not a requests error, so no module retries it: the crawl
-    stops and main.py explains what to do."""
+    stops (main.py exits with code 3)."""
 
 
 class RateLimiter:
-    """Context manager that allows one request at a time and keeps request
-    starts at least `min_interval` seconds apart.
+    """Context manager that keeps request starts at least `min_interval`
+    seconds apart and allows `connections` requests at a time (one by
+    default).
 
         with ARXIV:
             response = session.get(url, timeout=60)
 
     The interval is counted from the start of the previous request: if a
     download already took 7 seconds, the next request starts immediately.
+    With `burst` > 1, every `burst` starts are followed by `burst_pause`
+    seconds without any (ARXIV_EXPORT: 4 starts 0.25 s apart, then 1 s). A
+    limiter with a `parent` also enters the parent for each request, so the
+    request counts in both paces (ARXIV inside ARXIV_EXPORT).
 
     With `cooldown` > 0 the limiter also reacts to refusals: throttled()
     pauses every request for the cool-down (and, with slow_down=True, switches
@@ -95,12 +242,18 @@ class RateLimiter:
     been refused for that many seconds.
     """
 
-    def __init__(self, min_interval: float, *, cooldown: float = 0.0,
+    def __init__(self, min_interval: float, *, burst: int = 1, burst_pause: float = 0.0,
+                 connections: int = 1, parent: RateLimiter | None = None,
+                 cooldown: float = 0.0,
                  max_cooldown: float = 0.0, slow_interval: float | None = None,
                  recover_after: int = 30, give_up_after: float = 0.0,
                  isolation_window: float = 120.0, name: str = "limiter"):
         self.min_interval = min_interval
         self.interval = min_interval  # current spacing, slower after a general 503
+        self.burst = max(burst, 1)
+        self.burst_pause = burst_pause
+        self.connections = max(connections, 1)
+        self.parent = parent
         self.cooldown = cooldown
         self.max_cooldown = max(max_cooldown, cooldown)
         self.slow_interval = max(slow_interval or min_interval, min_interval)
@@ -113,9 +266,10 @@ class RateLimiter:
         self.isolated_count = 0      # failures of a single URL (no pause)
         self.paused_seconds = 0.0    # total time all requests were held back
         self._last_failure = None    # (url, time) of the latest single-URL failure
-        self._lock = threading.Lock()   # one request at a time
-        self._state = threading.Lock()  # pause bookkeeping, held only briefly
+        self._slots = threading.BoundedSemaphore(self.connections)  # requests open at once
+        self._state = threading.Lock()  # pace and pause bookkeeping, held only briefly
         self._last_start = float("-inf")
+        self._in_burst = 0  # requests started in the current burst
         self._paused_until = float("-inf")
         self._next_cooldown = cooldown
         self._successes = 0
@@ -123,49 +277,88 @@ class RateLimiter:
         self._gave_up = False
 
     def __enter__(self):
-        self._lock.acquire()  # one connection at a time
+        self._slots.acquire()  # at most `connections` requests open at once
         try:
-            with self._state:
-                start_at = max(self._last_start + self.interval, self._paused_until)
-            wait = start_at - time.monotonic()
-            if wait > 0:
-                time.sleep(wait)  # only wait for what is left of the interval or pause
+            self._wait_turn()
             self._check_give_up()
+            if self.parent is not None:
+                self.parent.__enter__()
         except BaseException:  # giving up, or Ctrl+C during a pause
-            self._lock.release()
+            self._slots.release()
             raise
-        self._last_start = time.monotonic()
+        if self.parent is not None:
+            with self._state:
+                # The parent may have made the request wait: count from its real start.
+                self._last_start = max(self._last_start, time.monotonic())
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        self._lock.release()
+        if self.parent is not None:
+            self.parent.__exit__(exc_type, exc, tb)
+        self._slots.release()
         return False
+
+    @property
+    def mean_interval(self) -> float:
+        """Seconds per request on average at the normal pace (ARXIV: 3,
+        ARXIV_EXPORT: 0.5)."""
+        return self.min_interval + self.burst_pause / self.burst
+
+    def _wait_turn(self) -> None:
+        """Sleep until this request may start, then count its start. With
+        several connections the start is checked and counted under one lock,
+        so two requests never take the same turn; a pause that begins while
+        a request waits (a 429 on another connection) makes it wait longer."""
+        while True:
+            with self._state:
+                now = time.monotonic()
+                gap = self.interval + (self.burst_pause if self._in_burst >= self.burst else 0.0)
+                start_at = max(self._last_start + gap, self._paused_until)
+                if start_at <= now:
+                    if self._in_burst >= self.burst or \
+                            now - self._last_start >= self.interval + self.burst_pause:
+                        self._in_burst = 0  # a new burst: the last one is full, or idle long enough
+                    self._in_burst += 1
+                    self._last_start = now
+                    return
+            time.sleep(start_at - now)  # only wait for what is left of the interval or pause
 
     def throttled(self, retry_after: float = 0.0, url: str = "", reason: str = "HTTP 429",
                   slow_down: bool = False) -> None:
         """Every request would be refused: hold back every request for the
         current cool-down (or Retry-After when longer) and double the next
-        cool-down. With slow_down=True, requests are also spaced
-        `slow_interval` apart until `recover_after` of them have succeeded."""
+        cool-down. No request starts during a pause, so a refusal that arrives
+        while one runs answers a request sent before it (several connections
+        are open at once): it belongs to the same episode and can only lengthen
+        the pause to a longer Retry-After. With slow_down=True, requests are
+        also spaced `slow_interval` apart until `recover_after` of them have
+        succeeded."""
         if not self.cooldown:
             return
         with self._state:
             now = time.monotonic()
-            pause = max(self._next_cooldown, retry_after)
+            ongoing = now < self._paused_until  # same episode: do not double again
+            pause = retry_after if ongoing else max(self._next_cooldown, retry_after)
             # Never shorten an ongoing pause; count only the time it is extended by.
             until = max(self._paused_until, now + pause)
-            self.paused_seconds += until - max(self._paused_until, now)
+            extended = until - max(self._paused_until, now)
+            self.paused_seconds += extended
             self._paused_until = until
-            self._next_cooldown = min(self._next_cooldown * 2, self.max_cooldown)
             if slow_down:
                 self.interval = self.slow_interval
-            self._successes = 0
-            self._last_failure = None
-            self.throttle_count += 1
-            if self._refused_since is None:
-                self._refused_since = now
-            refused_for = now - self._refused_since
+            if not ongoing:
+                self._next_cooldown = min(self._next_cooldown * 2, self.max_cooldown)
+                self._successes = 0
+                self._last_failure = None
+                self.throttle_count += 1
+                if self._refused_since is None:
+                    self._refused_since = now
+            refused_for = now - self._refused_since if self._refused_since is not None else 0.0
             total = self.paused_seconds
+        if ongoing:
+            if extended > 0:
+                self._log("pause", reason, extended, total, url)
+            return
         so_far = f"{refused_for:.0f} s" if refused_for < 120 else f"{refused_for / 60:.0f} min"
         limit = (f"; the crawl stops if this lasts {self.give_up_after / 60:.0f} min"
                  if self.give_up_after else "")
@@ -215,8 +408,13 @@ class RateLimiter:
             self._next_cooldown = self.cooldown
             self._successes = 0
             total = self.paused_seconds
-        print(f"[{self.name}] {self.recover_after} requests in a row succeeded: "
-              f"back to {self.interval:.0f} s between requests", flush=True)
+        if self.burst > 1:
+            pace = (f"bursts of {self.burst} requests {self.interval:g} s apart, "
+                    f"then {self.burst_pause:g} s")
+        else:
+            pace = f"{self.interval:g} s between requests"
+        print(f"[{self.name}] {self.recover_after} requests in a row succeeded: back to {pace}",
+              flush=True)
         self._log("recover", "", 0, total, "")
 
     def _check_give_up(self) -> None:
@@ -235,10 +433,7 @@ class RateLimiter:
         raise ArxivUnavailable(
             f"{self.name} has refused or not answered every request for {refused_for / 60:.0f} "
             f"minutes (HTTP 429/503 or no answer), so the crawl stops here instead of waiting "
-            f"longer. Everything finished so far is saved. arXiv says these refusals come from "
-            f"the total load on its servers and the only fix is to try again later: check that "
-            f"no other crawler of yours is running, then run the same command again later (for "
-            f"example in 1-2 hours), or use --max-wait-minutes to wait longer next time.")
+            f"longer. Everything finished so far is saved.")
 
     def _log(self, event: str, reason: str, pause: float, total: float, url: str) -> None:
         if self.log is not None:
@@ -248,56 +443,84 @@ class RateLimiter:
                            interval_seconds=self.interval, url=url)
 
 
-# The single limiter every module uses for arXiv (API and /src/ downloads).
-ARXIV = RateLimiter(min_interval=3.0, cooldown=15.0, max_cooldown=300.0,
-                    slow_interval=6.0, recover_after=30, give_up_after=1800.0,
-                    isolation_window=120.0, name="arXiv")
+# Every request sent to arXiv: /src/ downloads directly, API calls through
+# ARXIV. Pace of the bulk data page; refusals pause every arXiv request.
+ARXIV_EXPORT = RateLimiter(min_interval=0.25, burst=4, burst_pause=1.0, connections=4,
+                           cooldown=15.0, max_cooldown=300.0, slow_interval=6.0,
+                           recover_after=30, give_up_after=1800.0,
+                           isolation_window=120.0, name="arXiv")
+
+# arXiv API calls (discovery, metadata, reference dates): 3 s apart, one at a time.
+ARXIV = RateLimiter(min_interval=3.0, parent=ARXIV_EXPORT, name="arXiv API")
 
 
 def _is_arxiv(url: str) -> bool:
     """True for arXiv URLs; other servers (Semantic Scholar has its own
-    limiter and retries) are never reported to ARXIV."""
+    limiter and retries) are never reported to ARXIV_EXPORT."""
     host = urlsplit(url).hostname or ""
     return any(host == h or host.endswith("." + h) for h in ARXIV_HOSTS)
 
 
 def _report_to_arxiv_limiter(response, *args, **kwargs):
-    """requests response hook: tell ARXIV how arXiv answered."""
+    """requests response hook: tell ARXIV_EXPORT how arXiv answered."""
     if _is_arxiv(response.url):
         status = response.status_code
         if status == 429:    # overloaded for everyone: pause every request
-            ARXIV.throttled(_retry_after_seconds(response), response.url, "HTTP 429")
+            ARXIV_EXPORT.throttled(_retry_after_seconds(response), response.url, "HTTP 429")
         elif status == 503:  # this file, or excessive use if it spreads
-            ARXIV.failed(response.url, "HTTP 503", _retry_after_seconds(response), slow_down=True)
+            ARXIV_EXPORT.failed(response.url, "HTTP 503", _retry_after_seconds(response),
+                                slow_down=True)
         elif status < 400:
-            ARXIV.succeeded()
+            ARXIV_EXPORT.succeeded()
     return None  # keep the response unchanged
 
 
 class _ArxivAdapter(HTTPAdapter):
-    """Transport adapter that also reports to ARXIV when arXiv gives no answer
-    at all (network down, DNS failure, no reply in time). One silent request
-    is retried by its caller; when different URLs keep failing, every request
-    waits for the cool-down instead of failing one after the other. A
+    """Transport adapter that also reports to ARXIV_EXPORT when arXiv gives no
+    answer at all (network down, DNS failure, no reply in time). One silent
+    request is retried by its caller; when different URLs keep failing, every
+    request waits for the cool-down instead of failing one after the other. A
     connection cut while a body is being read is not reported: that error
-    comes later, from reading the body, and downloader.py resumes the file."""
+    comes later, from reading the body, and downloader.py resumes the file.
+
+    Transport adapter tự động xoay vòng proxy theo loại request và báo lỗi kết nối
+    về ARXIV_EXPORT."""
+
+    def __init__(self, proxy_pool: ProxyPool | None = PROXY_POOL, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.proxy_pool = proxy_pool
 
     def send(self, request, *args, **kwargs):
+        chosen = ""  # proxy dùng cho request này; '' = mạng gốc
+        if _is_arxiv(request.url) and not _has_explicit_proxy(kwargs.get("proxies")):
+            if "/src/" in request.url or "/pdf/" in request.url or "/e-print/" in request.url:
+                chosen = UNLIMITED_POOL.next() or ""
+            elif self.proxy_pool:
+                chosen = self.proxy_pool.next() or ""
+            if chosen:
+                kwargs["proxies"] = {"http": chosen, "https": chosen}
+
         try:
             return super().send(request, *args, **kwargs)
         except (requests.ConnectionError, requests.Timeout) as exc:
-            if _is_arxiv(request.url):
-                ARXIV.failed(request.url, f"no answer ({type(exc).__name__})")
+            if chosen:  # proxy/WARP hỏng hoặc hết băng thông: tạm bỏ nó, người gọi thử lại đường khác
+                _quarantine(chosen, f"lỗi kết nối ({type(exc).__name__})")
+            elif _is_arxiv(request.url):
+                ARXIV_EXPORT.failed(request.url, f"no answer ({type(exc).__name__})")
             raise
 
 
-def make_session(user_agent: str = DEFAULT_USER_AGENT) -> requests.Session:
+def make_session(user_agent: str = DEFAULT_USER_AGENT,
+                 proxy_pool: ProxyPool | None = PROXY_POOL) -> requests.Session:
     """HTTP session that identifies the crawler, as arXiv asks, and reports
-    arXiv's answers and failed connections to the shared ARXIV limiter."""
+    arXiv's answers and failed connections to the shared ARXIV_EXPORT limiter.
+
+    HTTP session tự động gắn User-Agent, xoay vòng proxy qua _ArxivAdapter,
+    và báo trạng thái phản hồi về ARXIV_EXPORT limiter."""
     session = requests.Session()
     session.headers["User-Agent"] = user_agent
     session.hooks["response"].append(_report_to_arxiv_limiter)
-    adapter = _ArxivAdapter()
+    adapter = _ArxivAdapter(proxy_pool=proxy_pool)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
     return session
@@ -311,10 +534,13 @@ def get_with_retry(session: requests.Session, url: str, *, params=None,
     Network errors and HTTP 429/5xx are retried after 3, 6, 12, 24 seconds
     (or the server's Retry-After when it is longer; after a 429 the limiter's
     cool-down also applies). The whole response body is read while the
-    limiter is held, so only one connection is ever open.
+    limiter is held, so ARXIV never has more than one connection open.
 
     Returns (response, attempts, error): `response` is the last response
     received (None after a network error) and `error` is "" on HTTP 200.
+
+    Mỗi lần retry khi đi qua `session.get()` sẽ tự động được `_ArxivAdapter`
+    cấp một proxy kế tiếp trong pool.
     """
     response, error = None, ""
     backoff = first_backoff

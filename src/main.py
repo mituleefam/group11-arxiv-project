@@ -55,7 +55,8 @@ Contract with the other modules. downloader.py and references.py each expose
 where `papers` are the manifest records with status "success" (fields:
 arxiv_id, folder, latest_version, versions); references.run also takes
 resolve_dates=False (--no-arxiv-dates). Every arXiv request made by
-downloader.py must go through rate_limiter.ARXIV.
+downloader.py must go through rate_limiter.ARXIV_EXPORT, and every arXiv API
+call through rate_limiter.ARXIV (see rate_limiter.py for the two paces).
 """
 
 from __future__ import annotations
@@ -72,8 +73,8 @@ from collections import Counter
 from common import API_ERROR, SUCCESS, CsvLog, DataLayout, Manifest, RunLock, now_iso
 from discovery import API_LOG_FIELDS, RangeBound, discover_range, known_records
 from metadata import collect_metadata
-from rate_limiter import (ARXIV, DEFAULT_USER_AGENT, THROTTLE_LOG_FIELDS, ArxivUnavailable,
-                          make_session)
+from rate_limiter import (ARXIV_EXPORT, DEFAULT_USER_AGENT, THROTTLE_LOG_FIELDS,
+                          ArxivUnavailable, make_session)
 
 STAGES = ("discovery", "metadata", "download", "references")
 PARALLEL_STAGES = {"download": "downloader", "references": "references"}  # stage -> module
@@ -258,10 +259,10 @@ def main(argv=None) -> int:
             todo = ", ".join(f"{key}={left[key]}" for key in LEFT_KEYS if left[key])
             print(f"Still to do after {args.retry_passes} retry passes: {todo}. "
                   f"Run the same command again later to finish.")
-        if ARXIV.throttle_count or ARXIV.isolated_count:
-            print(f"arXiv: {ARXIV.throttle_count} general refusals paused every request "
-                  f"{ARXIV.paused_seconds:.0f} s in total; {ARXIV.isolated_count} single-file "
-                  f"failures were retried without pausing (logs/arxiv_throttle_log.csv)")
+        if ARXIV_EXPORT.throttle_count or ARXIV_EXPORT.isolated_count:
+            print(f"arXiv: {ARXIV_EXPORT.throttle_count} general refusals paused every request "
+                  f"{ARXIV_EXPORT.paused_seconds:.0f} s in total; {ARXIV_EXPORT.isolated_count} "
+                  f"single-file failures were retried without pausing (logs/arxiv_throttle_log.csv)")
         return 0
     except KeyboardInterrupt:
         print("\nStopped by the user. Finished papers and versions are saved; "
@@ -282,8 +283,8 @@ def crawl(args: argparse.Namespace, layout: DataLayout, stages: list[str], pass_
     api_log = CsvLog(layout.logs / "arxiv_api_log.csv", API_LOG_FIELDS)
     run_log = CsvLog(layout.logs / "run_log.csv", RUN_LOG_FIELDS)
     pass_log = CsvLog(layout.logs / "pass_log.csv", PASS_LOG_FIELDS)
-    ARXIV.log = CsvLog(layout.logs / "arxiv_throttle_log.csv", THROTTLE_LOG_FIELDS)
-    ARXIV.give_up_after = args.max_wait_minutes * 60
+    ARXIV_EXPORT.log = CsvLog(layout.logs / "arxiv_throttle_log.csv", THROTTLE_LOG_FIELDS)
+    ARXIV_EXPORT.give_up_after = args.max_wait_minutes * 60
     session = make_session(args.user_agent)
     run_id = now_iso()
     started = time.perf_counter()
