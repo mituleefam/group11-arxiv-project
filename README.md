@@ -213,10 +213,11 @@ Size reduction from removing figures: `1 - kept_bytes / original_bytes`.
 | `n_references` | References actually received. |
 | `n_with_arxiv_id`, `n_unique_arxiv_id` | References with an arXiv ID, and distinct arXiv IDs. |
 | `n_complete`, `n_incomplete`, `n_unresolved` | References by metadata quality (see `references.py`). |
-| `pages` | Pages of the `/references` endpoint read. |
-| `attempts` | HTTP attempts. |
-| `seconds` | Time spent on the paper. |
+| `pages` | Pages of the `/references` endpoint read (0 when the references came in a `/paper/batch` call). |
+| `attempts` | HTTP attempts (for `batch`, those of the call shared by its papers). |
+| `seconds` | Time spent on the paper (for `batch`, the call's time divided among its papers). |
 | `error` | Empty on success. |
+| `method` | `lookup` (nothing more to fetch: `not_found`, `empty`, or the lookup failed), `batch` (references of many papers in one `/paper/batch` call) or `per_paper` (`/paper/{id}/references`, page by page). |
 
 ## 6. Rate limits
 
@@ -234,8 +235,14 @@ Size reduction from removing figures: `1 - kept_bytes / original_bytes`.
   arXiv requests. Sources are fetched from `export.arxiv.org`, never from
   `arxiv.org`.
 - **Semantic Scholar:** 1 request per second with an API key, one every 3.1 s
-  without (100 requests per 5 minutes); HTTP 429 and 5xx are retried with
-  exponential backoff.
+  without (100 requests per 5 minutes). The references of many papers come in
+  one `/paper/batch` call, at most 8 000 references per call (the endpoint
+  returns at most 9 999 and silently leaves papers short above that, so a
+  paper is kept only when its whole `referenceCount` came back); the others
+  are read page by page from `/paper/{id}/references`. 5 000 papers take about
+  40 calls instead of one per paper. HTTP 429 is retried after 2 s (or the
+  server's `Retry-After`), up to 12 times; 5xx and network errors after 5, 10,
+  20, 40 and 80 s.
 
   
 ## 7. Data Validation, Statistics, and Benchmarking (Role 4)
