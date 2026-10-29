@@ -50,6 +50,21 @@ every module and thread, which those per-call decorators do not provide):
     URLs fail within 2 minutes the problem is general: every request pauses as
     above, and after a 503 requests are spaced 6 s apart until 30 in a row
     have succeeded.
+  * A source file (/src/) that fails again (HTTP 429 or 503, or no answer)
+    after an earlier failure in this run, or that already failed in an
+    earlier pass or run (the downloader says so with mark_suspect()), has a
+    problem of its own: arXiv can be unable to serve one source for hours
+    while it serves every other one (seen in our October 2026 crawls: a few
+    versions answered 503 and 429 for hours, and each time two of them failed
+    close together every request paused, about 30 minutes in all). Such a
+    failure pauses nothing and does not make the next failure look general.
+    After `defer_after` failures (one, for a file that failed in an earlier
+    pass) should_defer() tells the downloader to put the file aside for a
+    later pass instead of asking for it again and again. When arXiv refuses
+    every request, each new file it refuses still pauses every request, so a
+    general refusal keeps the doubling pauses and the give-up below, while
+    the files it refused are asked for at most twice. API calls keep the two
+    rules above.
   * Any normal answer ends a run of refusals.
 
 arXiv never says how long it will keep refusing. The pauses are therefore not
@@ -240,6 +255,13 @@ class RateLimiter:
     With the default cooldown=0 these calls do nothing. With `give_up_after`
     > 0, entering the limiter raises ArxivUnavailable once every request has
     been refused for that many seconds.
+
+    URLs containing one of `file_markers` are files: refused() (HTTP 429) and
+    failed() count their failures one by one, and a file that failed before
+    only adds a failure of its own (no pause). mark_suspect() flags a file
+    that failed in an earlier pass or run, should_defer() says when its
+    caller should leave it for a later pass (`defer_after` failures, 0:
+    never) and deferred() logs that it did.
     """
 
     def __init__(self, min_interval: float, *, burst: int = 1, burst_pause: float = 0.0,
@@ -247,7 +269,8 @@ class RateLimiter:
                  cooldown: float = 0.0,
                  max_cooldown: float = 0.0, slow_interval: float | None = None,
                  recover_after: int = 30, give_up_after: float = 0.0,
-                 isolation_window: float = 120.0, name: str = "limiter"):
+                 isolation_window: float = 120.0, name: str = "limiter",
+                 file_markers: tuple[str, ...] = (), defer_after: int = 0):
         self.min_interval = min_interval
         self.interval = min_interval  # current spacing, slower after a general 503
         self.burst = max(burst, 1)
@@ -261,11 +284,16 @@ class RateLimiter:
         self.give_up_after = give_up_after
         self.isolation_window = isolation_window
         self.name = name
+        self.file_markers = tuple(file_markers)
+        self.defer_after = defer_after
         self.log = None  # optional CsvLog with THROTTLE_LOG_FIELDS (set by main.py)
         self.throttle_count = 0      # refusals that paused every request
         self.isolated_count = 0      # failures of a single URL (no pause)
+        self.deferred_count = 0      # files put aside for a later pass (deferred())
         self.paused_seconds = 0.0    # total time all requests were held back
         self._last_failure = None    # (url, time) of the latest single-URL failure
+        self._file_failures: dict[str, int] = {}  # file URL -> failures since its last success
+        self._suspects: set[str] = set()  # file URLs that failed in an earlier pass or run
         self._slots = threading.BoundedSemaphore(self.connections)  # requests open at once
         self._state = threading.Lock()  # pace and pause bookkeeping, held only briefly
         self._last_start = float("-inf")
@@ -366,23 +394,47 @@ class RateLimiter:
               f"(refused for {so_far} so far{limit})", flush=True)
         self._log("pause", reason, pause, total, url)
 
+    def refused(self, url: str, retry_after: float = 0.0) -> None:
+        """HTTP 429. For a file that failed before, one more failure of that
+        file (see failed()); for anything else every request would be
+        refused: throttled()."""
+        if not self.cooldown:
+            return
+        with self._state:
+            own = self._known_bad(url)
+            if not own and self._is_file(url):
+                self._file_failures[url] = self._file_failures.get(url, 0) + 1
+        if own:
+            self.failed(url, "HTTP 429", retry_after)
+        else:
+            self.throttled(retry_after, url, "HTTP 429")
+
     def failed(self, url: str, reason: str, retry_after: float = 0.0,
                slow_down: bool = False) -> None:
         """A request failed in a way that may concern this URL only (HTTP 503,
         no answer). Its caller retries it with its own backoff while the other
         requests go on. If a different URL failed too within
-        `isolation_window` seconds, the problem is general: throttled()."""
+        `isolation_window` seconds, the problem is general: throttled(). A
+        file that failed before has a problem of its own: its failure is
+        only counted, and it is not compared with the other URLs."""
         if not self.cooldown:
             return
         with self._state:
             now = time.monotonic()
-            last = self._last_failure
-            general = (last is not None and last[0] != url
-                       and now - last[1] <= self.isolation_window)
-            self._last_failure = (url, now)
-            if not general:
+            own = self._known_bad(url)
+            if self._is_file(url):
+                self._file_failures[url] = self._file_failures.get(url, 0) + 1
+            if own:
+                general = new_url = False
                 self.isolated_count += 1
-            new_url = last is None or last[0] != url
+            else:
+                last = self._last_failure
+                general = (last is not None and last[0] != url
+                           and now - last[1] <= self.isolation_window)
+                self._last_failure = (url, now)
+                if not general:
+                    self.isolated_count += 1
+                new_url = last is None or last[0] != url
         if general:
             self.throttled(retry_after, url, f"{reason} on several files", slow_down)
             return
@@ -391,14 +443,50 @@ class RateLimiter:
                   f"the other requests go on", flush=True)
         self._log("isolated", reason, 0, self.paused_seconds, url)
 
-    def succeeded(self) -> None:
-        """The server answered normally. After `recover_after` successes in a
-        row the normal pace and the first cool-down length come back."""
+    def _is_file(self, url: str) -> bool:
+        return any(marker in url for marker in self.file_markers)
+
+    def _known_bad(self, url: str) -> bool:
+        """A file that failed earlier in this run or in an earlier pass or run
+        (call with self._state held)."""
+        return self._is_file(url) and (url in self._suspects or self._file_failures.get(url, 0) > 0)
+
+    def mark_suspect(self, url: str) -> None:
+        """`url` failed in an earlier pass or run: its next failure is a
+        problem of its own, and one failure is enough to put it aside."""
+        if self._is_file(url):
+            with self._state:
+                self._suspects.add(url)
+
+    def should_defer(self, url: str) -> bool:
+        """True when the caller should stop asking for `url` now and leave it
+        for a later pass: a file that failed `defer_after` times in this run
+        (once, if it already failed in an earlier pass)."""
+        if not self.defer_after or not self._is_file(url):
+            return False
+        with self._state:
+            failures = self._file_failures.get(url, 0)
+            return failures >= self.defer_after or (url in self._suspects and failures >= 1)
+
+    def deferred(self, url: str, reason: str) -> None:
+        """The caller put `url` aside for a later pass (logged as "defer")."""
+        with self._state:
+            self.deferred_count += 1
+            total = self.paused_seconds
+        self._log("defer", reason, 0, total, url)
+
+    def succeeded(self, url: str = "") -> None:
+        """The server answered normally (for `url`, when given: that file is
+        no longer suspect). After `recover_after` successes in a row the
+        normal pace and the first cool-down length come back."""
         if not self.cooldown:
             return
         with self._state:
             self._refused_since = None  # any normal answer ends the run of refusals
             self._last_failure = None   # and a later single failure is isolated again
+            if url:
+                self._file_failures.pop(url, None)
+                self._suspects.discard(url)
             if self.interval == self.min_interval and self._next_cooldown == self.cooldown:
                 return  # already at the normal pace
             self._successes += 1
@@ -448,7 +536,8 @@ class RateLimiter:
 ARXIV_EXPORT = RateLimiter(min_interval=0.25, burst=4, burst_pause=1.0, connections=4,
                            cooldown=15.0, max_cooldown=300.0, slow_interval=6.0,
                            recover_after=30, give_up_after=1800.0,
-                           isolation_window=120.0, name="arXiv")
+                           isolation_window=120.0, name="arXiv",
+                           file_markers=("/src/", "/e-print/"), defer_after=2)
 
 # arXiv API calls (discovery, metadata, reference dates): 3 s apart, one at a time.
 ARXIV = RateLimiter(min_interval=3.0, parent=ARXIV_EXPORT, name="arXiv API")
@@ -465,13 +554,13 @@ def _report_to_arxiv_limiter(response, *args, **kwargs):
     """requests response hook: tell ARXIV_EXPORT how arXiv answered."""
     if _is_arxiv(response.url):
         status = response.status_code
-        if status == 429:    # overloaded for everyone: pause every request
-            ARXIV_EXPORT.throttled(_retry_after_seconds(response), response.url, "HTTP 429")
+        if status == 429:    # overloaded for everyone (or a file that keeps failing)
+            ARXIV_EXPORT.refused(response.url, _retry_after_seconds(response))
         elif status == 503:  # this file, or excessive use if it spreads
             ARXIV_EXPORT.failed(response.url, "HTTP 503", _retry_after_seconds(response),
                                 slow_down=True)
         elif status < 400:
-            ARXIV_EXPORT.succeeded()
+            ARXIV_EXPORT.succeeded(response.url)
     return None  # keep the response unchanged
 
 

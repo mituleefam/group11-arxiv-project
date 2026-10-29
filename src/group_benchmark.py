@@ -1,10 +1,11 @@
 """Group benchmark: one table for the crawls of every member.
 
 The benchmark is asked on the data of the whole group, with the retry and
-waiting time counted in the running time. Each member crawls their own range
-on their own Colab runtime, so the numbers are spread over one data folder
-per member. This tool reads those folders and writes one row per member plus
-a row for the group. It sends no request and changes nothing in the folders.
+waiting time counted in the running time. Every member's range has its own
+data folder (chunked_crawl.py crawls them one after the other), so the
+numbers are spread over one data folder per member. This tool reads those
+folders and writes one row per member plus a row for the group. It sends no
+request and changes nothing in the folders.
 
 Usage (each argument is a member's --data-dir, optionally named NAME=PATH;
 the folder name is used otherwise):
@@ -38,6 +39,8 @@ Where the numbers come from (<data-dir>/logs unless noted):
                          rate_limiter.py)
     arxiv_pause_seconds  time every arXiv request was held back because arXiv
                          refused or did not answer (arxiv_throttle_log.csv)
+    arxiv_deferred       source files put aside for a later pass because they
+                         kept failing while the others downloaded
     ram_*, data_dir_*    benchmark.py samples: RSS of the crawler's process
                          tree and size of the data folder
     ids, papers          work/paper_manifest.jsonl
@@ -46,10 +49,10 @@ Where the numbers come from (<data-dir>/logs unless noted):
 
 Group row: counts, bytes and seconds are added up, peaks are the highest
 member value and ram_mean_bytes is weighted by the number of samples. The
-JSON also gives wall_seconds_longest_member: members crawl on separate
-runtimes at the same time (arXiv's limit applies to each person), so the
-group's data is ready after the longest crawl, while wall_seconds is the
-machine time of the whole group.
+ranges are crawled one at a time (arXiv's rate limits "apply to all of the
+machines under your control as a whole"), so the group's wall_seconds, the
+sum, is how long the crawl of the group's data took; the JSON also gives
+wall_seconds_longest_member, the longest single range.
 """
 
 from __future__ import annotations
@@ -79,7 +82,7 @@ COLUMNS = (["member", "data_dir", "first_id", "last_id", "ids", "papers", "ids_n
               "data_dir_final_bytes", "arxiv_requests", "arxiv_api_requests",
               "arxiv_download_requests", "arxiv_floor_seconds",
               "arxiv_pause_seconds", "arxiv_pauses", "arxiv_isolated_failures",
-              "arxiv_give_ups"] + [f"left_{k}" for k in LEFT_KEYS])
+              "arxiv_deferred", "arxiv_give_ups"] + [f"left_{k}" for k in LEFT_KEYS])
 HIGHEST = {"ram_peak_bytes", "data_dir_peak_bytes"}  # the group row keeps the highest; others are added
 
 
@@ -188,6 +191,7 @@ def member_row(name: str, root: Path, warnings: list[str]) -> dict:
     pause, events = arxiv_pauses(read_csv(logs / "arxiv_throttle_log.csv"))
     row.update(arxiv_pause_seconds=pause, arxiv_pauses=events.get("pause", 0),
                arxiv_isolated_failures=events.get("isolated", 0),
+               arxiv_deferred=events.get("defer", 0),
                arxiv_give_ups=events.get("give_up", 0))
     return tidy(row)
 
@@ -248,10 +252,10 @@ def main(argv=None) -> int:
         "generated_at": now_iso(), "members": members, "group": group,
         "wall_seconds_longest_member": longest, "clock": clock,
         "definitions": {
-            "wall_seconds": "group: machine time, the sum of every member's benchmark.py "
-                            "invocations (empty when a member has none)",
-            "wall_seconds_longest_member": "members crawl at the same time on separate runtimes: "
-                                           "the group's data is ready after this time",
+            "wall_seconds": "group: the sum of every member's benchmark.py invocations, i.e. "
+                            "the crawl of the group's data with one crawler at a time (empty "
+                            "when a member has none)",
+            "wall_seconds_longest_member": "the longest single range",
             "arxiv_floor_seconds": f"arxiv_api_requests x {ARXIV.mean_interval:g} s + "
                                    f"arxiv_download_requests x {ARXIV_EXPORT.mean_interval:g} s: "
                                    f"the time the requests that were sent need at the pace arXiv "
@@ -274,7 +278,8 @@ def main(argv=None) -> int:
               f"({per_paper}/paper) | RAM peak {ram} | "
               f"arXiv: {row['arxiv_requests']} requests (floor {hours(row['arxiv_floor_seconds'])}), "
               f"paused {row['arxiv_pause_seconds'] / 60:.1f} min")
-    print(f"Group data ready after the longest member: {hours(longest)}")
+    print(f"All ranges one after the other: {hours(group[clock])}; longest single range: "
+          f"{hours(longest)}")
     for warning in warnings:
         print(f"WARNING {warning}")
     print(f"Outputs: {args.out / 'group_benchmark.csv'}, {args.out / 'group_benchmark.json'}")
