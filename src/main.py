@@ -260,9 +260,12 @@ def main(argv=None) -> int:
             print(f"Still to do after {args.retry_passes} retry passes: {todo}. "
                   f"Run the same command again later to finish.")
         if ARXIV_EXPORT.throttle_count or ARXIV_EXPORT.isolated_count:
+            aside = (f", {ARXIV_EXPORT.deferred_count} files that kept failing were put aside "
+                     f"for a later pass" if ARXIV_EXPORT.deferred_count else "")
             print(f"arXiv: {ARXIV_EXPORT.throttle_count} general refusals paused every request "
                   f"{ARXIV_EXPORT.paused_seconds:.0f} s in total; {ARXIV_EXPORT.isolated_count} "
-                  f"single-file failures were retried without pausing (logs/arxiv_throttle_log.csv)")
+                  f"single-file failures were retried without pausing{aside} "
+                  f"(logs/arxiv_throttle_log.csv)")
         return 0
     except KeyboardInterrupt:
         print("\nStopped by the user. Finished papers and versions are saved; "

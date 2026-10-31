@@ -14,6 +14,8 @@ src/
 ├── checkpoint.py    per-version state for resuming
 ├── references.py    references from the Semantic Scholar Graph API 
 ├── rate_limiter.py  shared arXiv limiters: API 3 s apart on one connection, downloads in bursts
+├── chunked_crawl.py whole ranges in steps on Colab, every step saved to Drive (group benchmark)
+├── snapshot.py      incremental .tar.gz backups of a data folder, and their restore
 ├── common.py        data layout, status codes, manifest, CSV logs
 └── requirements.txt
 environment.yml      conda environment (installs src/requirements.txt)
@@ -104,6 +106,16 @@ stopped: finished IDs, versions and papers are skipped and never overwritten;
 failed ones are tried again. `main.py` exits only when every selected stage has
 finished, so after `[download] finished` it may still be waiting for the
 references stage.
+
+**The group's ranges on Colab (benchmark).** The Colab notebook runs
+`python src/chunked_crawl.py plan.json`: the ranges are crawled one after the
+other, on the runtime's own disk (Google Drive is too slow for the crawler's
+many small files), in steps of 1000 papers, each step under `benchmark.py`.
+After every step `snapshot.py` saves what changed as one `.tar.gz` on Drive; on
+a new runtime the same command restores the folders and goes on with the step
+that was cut off. Failures of a step (a file arXiv cannot serve yet, a failed
+batch) are left to a sweep of the whole range at the end. See the docstring of
+`chunked_crawl.py` for the steps and exit codes.
 
 ## 3. Running a single stage
 
@@ -224,7 +236,9 @@ Size reduction from removing figures: `1 - kept_bytes / original_bytes`.
 - **arXiv API** (discovery, metadata, reference dates): at most one request
   every 3 seconds and one connection at a time, as the
   [API Terms of Use](https://info.arxiv.org/help/api/tou.html) ask, enforced
-  by `rate_limiter.ARXIV`.
+  by `rate_limiter.ARXIV`. IDs that an answer leaves out are asked about once
+  more before they are recorded as `not_found` (the API sometimes answers a
+  valid feed with entries missing).
 - **arXiv source download** (`export.arxiv.org/src/`): the pace the
   [bulk data page](https://info.arxiv.org/help/bulk_data.html#harvest) suggests
   for harvesting `export.arxiv.org`, "bursts at 4 requests per second with a
@@ -232,8 +246,12 @@ Size reduction from removing figures: `1 - kept_bytes / original_bytes`.
   requests 0.25 s apart, then none for 1 s (2 per second on average), with up
   to 4 downloads open at once, and `downloader.py` works on 4 papers at a
   time. The API calls count in this pace too, and every HTTP 429 pauses all
-  arXiv requests. Sources are fetched from `export.arxiv.org`, never from
-  `arxiv.org`.
+  arXiv requests, except one for a source file that already failed: such a
+  file has a problem of its own (arXiv can fail to serve one source for
+  hours), so its refusals pause nothing, and after two failures (one, if it
+  failed in an earlier pass) it is put aside for a later pass; papers that
+  failed before are downloaded last. Sources are fetched from
+  `export.arxiv.org`, never from `arxiv.org`.
 - **Semantic Scholar:** 1 request per second with an API key, one every 3.1 s
   without (100 requests per 5 minutes). The references of many papers come in
   one `/paper/batch` call, at most 8 000 references per call (the endpoint
