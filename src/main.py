@@ -19,38 +19,72 @@ Outputs under --data-dir (keep it outside the code repository):
     corpus/<yymm-id>/references.json  references (references.py, Member 3)
     logs/arxiv_api_log.csv         one row per arXiv API call
     logs/run_log.csv               start, end and duration of every stage
-    logs/arxiv_throttle_log.csv    pauses after HTTP 429 from arXiv (rate_limiter.py)
+    logs/pass_log.csv              what was left to do after each pass (see below)
+    logs/arxiv_throttle_log.csv    pauses after arXiv refused or did not answer (rate_limiter.py)
+    work/crawler.lock              present while a crawler runs on this folder
 
 The download and references stages run at the same time: they talk to
 different servers (arXiv and Semantic Scholar), each with its own rate limit.
 Re-running the same command is safe: every stage skips finished work.
+
+Errors are handled in passes. A failure that may be temporary (an arXiv
+batch that kept failing, a version whose download failed, a paper whose
+references could not be fetched) is not retried on the spot for minutes: the
+pass goes on with the other items, and when it ends, a retry pass runs only
+the stages that still have work, after a short delay (--retry-passes, 2 by
+default). Final outcomes (a 404 for a withdrawn version, a PDF-only version)
+are never retried. logs/pass_log.csv records what was left after each pass,
+so the report can show the success rate pass by pass.
+
+--no-arxiv-dates leaves the arXiv date of the cited papers (ref_submission_date)
+out of the crawl, so that the arXiv requests go to the source download only;
+ref_dates_kaggle.py then fills these dates from arXiv's metadata on Kaggle,
+without any arXiv request, and a later run without the option asks arXiv
+about the few IDs still missing.
+
+Pressing Stop (Ctrl+C) ends the run at once; the interrupted work is redone
+by the next run. If arXiv refuses every request for --max-wait-minutes (30 by
+default), the run stops with exit code 3 and says what to do (see
+rate_limiter.ArxivUnavailable). Only one crawler may use a data folder at a time: a second
+one refuses to start while work/crawler.lock is fresh (see common.RunLock).
 
 Contract with the other modules. downloader.py and references.py each expose
 
     run(papers: list[dict], layout: common.DataLayout) -> None
 
 where `papers` are the manifest records with status "success" (fields:
-arxiv_id, folder, latest_version, versions). Every arXiv request made by
-downloader.py must go through rate_limiter.ARXIV.
+arxiv_id, folder, latest_version, versions); references.run also takes
+resolve_dates=False (--no-arxiv-dates). Every arXiv request made by
+downloader.py must go through rate_limiter.ARXIV_EXPORT, and every arXiv API
+call through rate_limiter.ARXIV (see rate_limiter.py for the two paces).
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
 import importlib
+import os
 import sys
+import threading
 import time
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
 
-from common import SUCCESS, CsvLog, DataLayout, Manifest, now_iso
+from common import API_ERROR, SUCCESS, CsvLog, DataLayout, Manifest, RunLock, now_iso
 from discovery import API_LOG_FIELDS, RangeBound, discover_range, known_records
 from metadata import collect_metadata
-from rate_limiter import ARXIV, DEFAULT_USER_AGENT, THROTTLE_LOG_FIELDS, make_session
+from rate_limiter import (ARXIV_EXPORT, DEFAULT_USER_AGENT, THROTTLE_LOG_FIELDS,
+                          ArxivUnavailable, make_session)
 
 STAGES = ("discovery", "metadata", "download", "references")
 PARALLEL_STAGES = {"download": "downloader", "references": "references"}  # stage -> module
 RUN_LOG_FIELDS = ["run_id", "stage", "started_at", "finished_at", "seconds", "items", "note"]
+# Columns of logs/pass_log.csv: one row per pass, with what was still left to do.
+PASS_LOG_FIELDS = ["run_id", "pass", "stages", "started_at", "seconds", "papers", "outcome",
+                   "discovery_api_error", "metadata_incomplete", "download_failed",
+                   "references_api_error"]
+LEFT_KEYS = PASS_LOG_FIELDS[-4:]
+RETRY_PASS_DELAY = 30.0  # seconds before a retry pass: lets a short arXiv or network problem end
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -70,7 +104,22 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="IDs per arXiv API call (default: 100)")
     parser.add_argument("--user-agent", default=DEFAULT_USER_AGENT,
                         help="User-Agent header sent to arXiv")
+    parser.add_argument("--force", action="store_true",
+                        help="start even if work/crawler.lock says another crawler uses this "
+                             "data folder (only when you are sure it has stopped)")
+    parser.add_argument("--max-wait-minutes", type=float, default=30.0,
+                        help="stop when arXiv has refused every request for this long "
+                             "(default: 30; e.g. 120 for an unattended night run; 0: never stop)")
+    parser.add_argument("--retry-passes", type=int, default=2,
+                        help="extra passes over what failed in the first pass (default: 2; 0: none)")
+    parser.add_argument("--no-arxiv-dates", action="store_true",
+                        help="do not ask arXiv for the ref_submission_date of cited papers during "
+                             "the crawl; fill them afterwards with ref_dates_kaggle.py")
     args = parser.parse_args(argv)
+    if args.max_wait_minutes < 0:
+        parser.error("--max-wait-minutes must be 0 or more")
+    if args.retry_passes < 0:
+        parser.error("--retry-passes must be 0 or more")
 
     if args.sheet_range and (args.start or args.end):
         parser.error("use either --range or --start/--end, not both")
@@ -131,69 +180,178 @@ def load_stage(stage: str):
 
 
 def run_timed(stage: str, func, papers: list[dict], layout: DataLayout,
-              run_log: CsvLog, run_id: str) -> None:
+              run_log: CsvLog, run_id: str):
+    """Run one stage, log it in run_log.csv (with its status counts) and
+    return what the stage returned."""
     with StageTimer(run_log, run_id, stage) as timer:
         timer.items = len(papers)
-        func(papers, layout)
+        result = func(papers, layout)
+        if isinstance(result, dict):
+            timer.note = ", ".join(f"{k}={v}" for k, v in sorted(result.items()))
+    return result
+
+
+def run_parallel(runners: dict, papers: list[dict], layout: DataLayout,
+                 run_log: CsvLog, run_id: str) -> dict:
+    """Run the download and references stages at the same time.
+
+    Daemon threads with short joins rather than a ThreadPoolExecutor: when the
+    user presses Stop (Ctrl+C) the main thread gets control back at once and
+    the program can end, instead of the executor waiting for every remaining
+    download. Work cut off this way is redone by the next run.
+    """
+    errors: list[BaseException] = []
+    results: dict = {}
+
+    def stage_thread(stage, func):
+        try:
+            results[stage] = run_timed(stage, func, papers, layout, run_log, run_id)
+        except BaseException as exc:  # handed over to the main thread below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=stage_thread, args=item, name=item[0], daemon=True)
+               for item in runners.items()]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        while thread.is_alive():
+            thread.join(timeout=1.0)  # short waits keep Ctrl+C responsive
+    if errors:
+        raise errors[0]
+    return results
+
+
+def retry_stages(left: dict, selected: list[str]) -> list[str]:
+    """Stages a retry pass must run, in pipeline order, given what is `left`.
+    IDs whose discovery failed may be new papers, so they need every stage."""
+    if left["discovery_api_error"]:
+        wanted = set(STAGES)
+    else:
+        wanted = {stage for stage, key in (("metadata", "metadata_incomplete"),
+                                           ("download", "download_failed"),
+                                           ("references", "references_api_error")) if left[key]}
+    return [stage for stage in STAGES if stage in wanted and stage in selected]
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    start, end = args.start, args.end
-
     layout = DataLayout(args.data_dir)
     layout.create()
+    lock = RunLock(layout.work / "crawler.lock")
+    try:
+        lock.acquire(force=args.force)
+    except RuntimeError as exc:
+        print(f"Not started: {exc}")
+        return 2
+    try:
+        stages = args.stages
+        for pass_no in range(args.retry_passes + 1):
+            if pass_no:
+                todo = ", ".join(f"{key}={left[key]}" for key in LEFT_KEYS if left[key])
+                print(f"\n[retry pass {pass_no}/{args.retry_passes}] still to do: {todo}; "
+                      f"running {', '.join(stages)} again in {RETRY_PASS_DELAY:.0f} s", flush=True)
+                time.sleep(RETRY_PASS_DELAY)
+            left = crawl(args, layout, stages, pass_no)
+            stages = retry_stages(left, args.stages)
+            if not stages:
+                break
+        if any(left.values()):
+            todo = ", ".join(f"{key}={left[key]}" for key in LEFT_KEYS if left[key])
+            print(f"Still to do after {args.retry_passes} retry passes: {todo}. "
+                  f"Run the same command again later to finish.")
+        if ARXIV_EXPORT.throttle_count or ARXIV_EXPORT.isolated_count:
+            aside = (f", {ARXIV_EXPORT.deferred_count} files that kept failing were put aside "
+                     f"for a later pass" if ARXIV_EXPORT.deferred_count else "")
+            print(f"arXiv: {ARXIV_EXPORT.throttle_count} general refusals paused every request "
+                  f"{ARXIV_EXPORT.paused_seconds:.0f} s in total; {ARXIV_EXPORT.isolated_count} "
+                  f"single-file failures were retried without pausing{aside} "
+                  f"(logs/arxiv_throttle_log.csv)")
+        return 0
+    except KeyboardInterrupt:
+        print("\nStopped by the user. Finished papers and versions are saved; "
+              "run the same command again to continue.", flush=True)
+        return 130
+    except ArxivUnavailable as exc:
+        print(f"\nStopped: {exc}", flush=True)
+        return 3
+    finally:
+        lock.release()
+
+
+def crawl(args: argparse.Namespace, layout: DataLayout, stages: list[str], pass_no: int) -> dict:
+    """One pass of the selected `stages` over the range of `args` (see the
+    module docstring). Returns what is left to do, keyed by LEFT_KEYS."""
+    start, end = args.start, args.end
     manifest = Manifest(layout.manifest)
     api_log = CsvLog(layout.logs / "arxiv_api_log.csv", API_LOG_FIELDS)
     run_log = CsvLog(layout.logs / "run_log.csv", RUN_LOG_FIELDS)
-    ARXIV.log = CsvLog(layout.logs / "arxiv_throttle_log.csv", THROTTLE_LOG_FIELDS)
+    pass_log = CsvLog(layout.logs / "pass_log.csv", PASS_LOG_FIELDS)
+    ARXIV_EXPORT.log = CsvLog(layout.logs / "arxiv_throttle_log.csv", THROTTLE_LOG_FIELDS)
+    ARXIV_EXPORT.give_up_after = args.max_wait_minutes * 60
     session = make_session(args.user_agent)
     run_id = now_iso()
-    print(f"Range {start.as_id()} .. {end.as_id()} | data: {layout.root} | stages: {', '.join(args.stages)}")
+    started = time.perf_counter()
+    left = dict.fromkeys(LEFT_KEYS, 0)
+    print(f"Range {start.as_id()} .. {end.as_id()} | data: {layout.root} | "
+          f"pass {pass_no + 1}: {', '.join(stages)}")
 
-    # 1. Discovery: which IDs exist and how many versions each has.
-    if "discovery" in args.stages:
-        with StageTimer(run_log, run_id, "discovery") as timer:
-            records = discover_range(start, end, session, manifest, api_log,
-                                     batch_size=args.batch_size, limit=args.limit)
-            timer.items = len(records)
-        counts = Counter(r["status"] for r in records)
-        print(f"  {len(records)} IDs: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
-    else:
-        records = known_records(manifest, start, end)
-        if args.limit is not None:
-            records = records[:args.limit]
+    papers: list[dict] = []
+    outcome = "completed"
+    try:
+        # 1. Discovery: which IDs exist and how many versions each has.
+        if "discovery" in stages:
+            with StageTimer(run_log, run_id, "discovery") as timer:
+                records = discover_range(start, end, session, manifest, api_log,
+                                         batch_size=args.batch_size, limit=args.limit)
+                timer.items = len(records)
+            counts = Counter(r["status"] for r in records)
+            left["discovery_api_error"] = counts.get(API_ERROR, 0)
+            print(f"  {len(records)} IDs: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+        else:
+            records = known_records(manifest, start, end)
+            if args.limit is not None:
+                records = records[:args.limit]
 
-    papers = [r for r in records if r["status"] == SUCCESS]
-    if not papers:
-        print("No paper found in this range yet; run the discovery stage first.")
-        return 0
+        papers = [r for r in records if r["status"] == SUCCESS]
+        if not papers:
+            print("No paper found in this range yet; run the discovery stage first.")
+            outcome = "no paper"
+            return left
 
-    # 2. Metadata: corpus/<id>/metadata.json for every paper.
-    if "metadata" in args.stages:
-        with StageTimer(run_log, run_id, "metadata") as timer:
-            written, incomplete = collect_metadata(papers, layout, session, api_log,
-                                                   batch_size=args.batch_size)
-            timer.items = written
-            if incomplete:
-                timer.note = f"{len(incomplete)} papers incomplete, re-run to retry"
-        print(f"  metadata.json written for {written} papers")
+        # 2. Metadata: corpus/<id>/metadata.json for every paper.
+        if "metadata" in stages:
+            with StageTimer(run_log, run_id, "metadata") as timer:
+                written, incomplete = collect_metadata(papers, layout, session, api_log,
+                                                       batch_size=args.batch_size)
+                timer.items = written
+                left["metadata_incomplete"] = len(incomplete)
+                if incomplete:
+                    timer.note = f"{len(incomplete)} papers incomplete"
+            print(f"  metadata.json written for {written} papers")
 
-    # 3. Source download (Member 2) and references (Member 3), in parallel.
-    runners = {stage: load_stage(stage) for stage in PARALLEL_STAGES if stage in args.stages}
-    runners = {stage: func for stage, func in runners.items() if func is not None}
-    if runners:
-        with ThreadPoolExecutor(max_workers=len(runners)) as pool:
-            futures = [pool.submit(run_timed, stage, func, papers, layout, run_log, run_id)
-                       for stage, func in runners.items()]
-            for future in futures:
-                future.result()  # re-raise any error from a stage
-
-    if ARXIV.throttle_count:
-        print(f"arXiv answered HTTP 429 {ARXIV.throttle_count} times; requests were paused "
-              f"{ARXIV.paused_seconds:.0f} s in total (logs/arxiv_throttle_log.csv)")
-    return 0
+        # 3. Source download (Member 2) and references (Member 3), in parallel.
+        runners = {stage: load_stage(stage) for stage in PARALLEL_STAGES if stage in stages}
+        runners = {stage: func for stage, func in runners.items() if func is not None}
+        if args.no_arxiv_dates and "references" in runners:
+            runners["references"] = functools.partial(runners["references"], resolve_dates=False)
+        if runners:
+            results = run_parallel(runners, papers, layout, run_log, run_id)
+            left["download_failed"] = (results.get("download") or {}).get("failed", 0)
+            left["references_api_error"] = (results.get("references") or {}).get(API_ERROR, 0)
+        return left
+    except BaseException as exc:  # still logged below, then passed on to main()
+        outcome = f"stopped: {type(exc).__name__}"
+        raise
+    finally:
+        pass_log.write(run_id=run_id, stages=" ".join(stages), started_at=run_id,
+                       seconds=round(time.perf_counter() - started, 3), papers=len(papers),
+                       outcome=outcome, **{"pass": pass_no + 1}, **left)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    code = main()
+    if code == 130:
+        # Stopped by the user: end now instead of waiting for the stage threads.
+        sys.stdout.flush()
+        os._exit(code)
+    sys.exit(code)

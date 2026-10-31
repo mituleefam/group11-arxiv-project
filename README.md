@@ -12,8 +12,11 @@ src/
 ├── downloader.py    download the source of every version
 ├── extractor.py     detect the source format
 ├── checkpoint.py    per-version state for resuming
-├── references.py    references from the Semantic Scholar Graph API
-├── rate_limiter.py  shared arXiv limiter: 3s between requests, one connection at a time
+├── references.py    references from the Semantic Scholar Graph API 
+├── rate_limiter.py  shared arXiv limiters: API 3 s apart on one connection, downloads in bursts
+├── chunked_crawl.py whole ranges in steps on Colab, every step saved to Drive (group benchmark)
+├── snapshot.py      incremental .tar.gz backups of a data folder, and their restore
+├── assigned_ids.py  every ID of an assigned range, for validate.py --assigned-ids
 ├── common.py        data layout, status codes, manifest, CSV logs
 └── requirements.txt
 environment.yml      conda environment (installs src/requirements.txt)
@@ -105,6 +108,18 @@ stopped: finished IDs, versions and papers are skipped and never overwritten;
 failed ones are tried again. `main.py` exits only when every selected stage has
 finished, so after `[download] finished` it may still be waiting for the
 references stage.
+
+**The group's ranges on Colab (benchmark).** The Colab notebook
+`src/chay-crawler-nhom-final.ipynb` (the official run; `src/chay-thu-crawler-nhom.ipynb`
+runs the same steps on a short trial range, in a separate Drive folder) runs
+`python src/chunked_crawl.py plan.json`: the ranges are crawled one after the
+other, on the runtime's own disk (Google Drive is too slow for the crawler's
+many small files), in steps of 1000 papers, each step under `benchmark.py`.
+After every step `snapshot.py` saves what changed as one `.tar.gz` on Drive; on
+a new runtime the same command restores the folders and goes on with the step
+that was cut off. Failures of a step (a file arXiv cannot serve yet, a failed
+batch) are left to a sweep of the whole range at the end. See the docstring of
+`chunked_crawl.py` for the steps and exit codes.
 
 ## 3. Running a single stage
 
@@ -204,30 +219,56 @@ Size reduction from removing figures: `1 - kept_bytes / original_bytes`.
 
 ### `references_log.csv` — one row per paper and attempt
 
-| Column                                       | Meaning                                                                                                                                                            |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `time`                                       | When the paper was finished.                                                                                                                                       |
-| `arxiv_id`                                   | Citing paper.                                                                                                                                                      |
-| `status`                                     | `success`, `empty` (no reference listed), `unavailable` (references exist but are not shared), `not_found` (not indexed) or `api_error` (retried on the next run). |
-| `s2_paper_id`                                | Semantic Scholar ID of the paper.                                                                                                                                  |
-| `s2_reference_count`                         | Number of references Semantic Scholar reports.                                                                                                                     |
-| `n_references`                               | References actually received.                                                                                                                                      |
-| `n_with_arxiv_id`, `n_unique_arxiv_id`       | References with an arXiv ID, and distinct arXiv IDs.                                                                                                               |
-| `n_complete`, `n_incomplete`, `n_unresolved` | References by metadata quality (see `references.py`).                                                                                                              |
-| `pages`                                      | Pages of the `/references` endpoint read.                                                                                                                          |
-| `attempts`                                   | HTTP attempts.                                                                                                                                                     |
-| `seconds`                                    | Time spent on the paper.                                                                                                                                           |
-| `error`                                      | Empty on success.                                                                                                                                                  |
+| Column | Meaning |
+|---|---|
+| `time` | When the paper was finished. |
+| `arxiv_id` | Citing paper. |
+| `status` | `success`, `empty` (no reference listed), `unavailable` (references exist but are not shared), `not_found` (not indexed) or `api_error` (retried on the next run). |
+| `s2_paper_id` | Semantic Scholar ID of the paper. |
+| `s2_reference_count` | Number of references Semantic Scholar reports. |
+| `n_references` | References actually received. |
+| `n_with_arxiv_id`, `n_unique_arxiv_id` | References with an arXiv ID, and distinct arXiv IDs. |
+| `n_complete`, `n_incomplete`, `n_unresolved` | References by metadata quality (see `references.py`). |
+| `pages` | Pages of the `/references` endpoint read (0 when the references came in a `/paper/batch` call). |
+| `attempts` | HTTP attempts (for `batch`, those of the call shared by its papers). |
+| `seconds` | Time spent on the paper (for `batch`, the call's time divided among its papers). |
+| `error` | Empty on success. |
+| `method` | `lookup` (nothing more to fetch: `not_found`, `empty`, or the lookup failed), `batch` (references of many papers in one `/paper/batch` call) or `per_paper` (`/paper/{id}/references`, page by page). |
 
 ## 6. Rate limits
 
-- **arXiv:** at most one request every 3 seconds and one connection at a time,
-  enforced by the shared `rate_limiter.ARXIV` for every module (discovery,
-  metadata, source download, reference dates). Sources are fetched from
+- **arXiv API** (discovery, metadata, reference dates): at most one request
+  every 3 seconds and one connection at a time, as the
+  [API Terms of Use](https://info.arxiv.org/help/api/tou.html) ask, enforced
+  by `rate_limiter.ARXIV`. IDs that an answer leaves out are asked about once
+  more before they are recorded as `not_found` (the API sometimes answers a
+  valid feed with entries missing).
+- **arXiv source download** (`export.arxiv.org/src/`): the pace the
+  [bulk data page](https://info.arxiv.org/help/bulk_data.html#harvest) suggests
+  for harvesting `export.arxiv.org`, "bursts at 4 requests per second with a
+  1 second sleep, per burst". `rate_limiter.ARXIV_EXPORT` starts at most 4
+  requests 0.25 s apart, then none for 1 s (2 per second on average), with up
+  to 6 downloads open at once (a source file often takes several seconds to
+  arrive), and `downloader.py` works on 6 papers at a time. The API calls
+  count in this pace too, and every HTTP 429 pauses all arXiv requests, except
+  one for a source file that already failed: such a
+  file has a problem of its own (arXiv can fail to serve one source for
+  hours), so its refusals pause nothing, and after two failures (one, if it
+  failed in an earlier pass) it is put aside for a later pass; papers that
+  failed before are downloaded last. With WARP or proxies on, a refusal that would pause every
+  request pauses only the route it came through while another route is free:
+  only that route pauses (15 s, doubled at each new refusal, up to 5 minutes),
+  and the other routes go on at the same shared pace. Sources are fetched from
   `export.arxiv.org`, never from `arxiv.org`.
 - **Semantic Scholar:** 1 request per second with an API key, one every 3.1 s
-  without (100 requests per 5 minutes); HTTP 429 and 5xx are retried with
-  exponential backoff.
+  without (100 requests per 5 minutes). The references of many papers come in
+  one `/paper/batch` call, at most 8 000 references per call (the endpoint
+  returns at most 9 999 and silently leaves papers short above that, so a
+  paper is kept only when its whole `referenceCount` came back); the others
+  are read page by page from `/paper/{id}/references`. 5 000 papers take about
+  40 calls instead of one per paper. HTTP 429 is retried after 2 s (or the
+  server's `Retry-After`), up to 12 times; 5xx and network errors after 5, 10,
+  20, 40 and 80 s.
 
 ## 7. Data Validation, Statistics, and Benchmarking (Role 4)
 
@@ -316,12 +357,15 @@ python src/validate.py --data-dir DATA_DIR \
   --expected-count 5000 --finished --progress-every 100
 ```
 
-`5000` is an illustrative **per-member range size**, not a hard-coded requirement. Checking a count cannot establish that the IDs match the official assignment. For that, have the group supply `official_ids.txt` with one valid arXiv ID per line, and instead run:
+`5000` is an illustrative **per-member range size**, not a hard-coded requirement. Checking a count cannot establish that the IDs match the official assignment. For that, list every ID of the range in `official_ids.txt` and instead run:
 
 ```bash
+python src/assigned_ids.py --start 2605.12338 --end 2605.17337 --out official_ids.txt
 python src/validate.py --data-dir DATA_DIR \
   --assigned-ids official_ids.txt --finished --progress-every 100
 ```
+
+A range over several months needs the last ID of every month but the last one, which the assignment does not give. `assigned_ids.py` then takes it from arXiv's metadata on Kaggle (`--download`, or `--snapshot FILE` for a copy on disk), not from the crawl itself, so an ID that discovery left out is reported as `assigned_id_missing`.
 
 Report: `DATA_DIR/logs/validation_report.csv`, columns `arxiv_id,version,check_name,status,error_message`.
 
@@ -431,3 +475,19 @@ Choose only a benchmark summary matching the experiment being described; do not 
 5. **Report owner:** generate tables/figures **during Jupyter Book build** in the separate report repository, showing denominators, sample sizes, environment, Git commit, run IDs, interruptions, unresolved exceptions and distinct wall/RAM/disk measures.
 
 **Delivery:** commit source code and documented commands to this repository, and publish the separate Jupyter Book report. Keep the crawled dataset and large logs off the source GitHub repository. The README explains how to reproduce the code; it is not a claim that all source 404 / S2 429 cases were fixed.
+
+### 7.9. Exporting the report data (`export_report_data.py`)
+
+The Jupyter Book is built by GitHub Actions, which cannot read the members' data folders. After every member has
+finished crawling and has run `validate.py --finished` on their own folder (the statistics are recomputed by the export), run once
+(for example on Colab with Google Drive mounted):
+
+```bash
+python src/export_report_data.py \
+  m1=DATA_DIR_M1 m2=DATA_DIR_M2 m3=DATA_DIR_M3 m4=DATA_DIR_M4 m5=DATA_DIR_M5 \
+  --out PATH_TO_BOOK_REPO/data/m1
+```
+
+It writes small aggregated tables (counts, sizes, statuses, timings, RAM/disk samples; no LaTeX text and no
+reference titles) that the book's notebooks read at build time. It sends no request and changes nothing in the
+data folders. Commit the resulting `data/m1/` folder to the book repository, not to this one.

@@ -24,6 +24,28 @@ Paper status:
 Reference metadata_status: "unresolved" (Semantic Scholar could not link the
 citation to a paper), "incomplete" (title or authors missing) or "complete".
 
+How the references are fetched, with as few calls as possible:
+ 1. /paper/batch with paperId,referenceCount, up to 500 papers per call:
+    which papers Semantic Scholar knows and how many references each has.
+ 2. /paper/batch with references.<fields>: the references of many papers in
+    one call, the papers grouped so that a call asks for at most
+    REFERENCE_BUDGET references. The endpoint "Can only return up to 9999
+    citations at a time" (Semantic Scholar API documentation), and above
+    that it does not fail: some papers come back with fewer references or
+    none. So a paper is kept only when it comes back with its whole
+    referenceCount. An answer that would pass 10 MB is refused with HTTP 400
+    and the number of IDs to retry with; the group is then split.
+ 3. /paper/{id}/references, page by page, for the other papers: more than
+    PAGE_SIZE references, or not returned whole by step 2 (mostly papers
+    whose references Semantic Scholar does not give out: "unavailable").
+Both endpoints return the same references, in the same order and with the
+same fields (compared on papers of 2605.123xx in October 2026), so the files
+do not depend on the call that fetched them. "pages" in references_all.json
+counts the pages of step 3 (0 when step 2 returned the references), and the
+"method" column of logs/references_log.csv tells the steps apart. For 5 000
+papers this is about 10 calls for step 1 and some 30 for step 2, instead of
+one call per paper.
+
 `ref_submission_date` is the arXiv v1 date of the cited paper, asked from the
 arXiv API; Semantic Scholar's publicationDate (usually the journal date) is
 kept apart as `ref_publication_date`. These arXiv calls run in a background
@@ -57,20 +79,34 @@ from rate_limiter import (ARXIV, RETRY_STATUS, RateLimiter, _retry_after_seconds
 S2_API = "https://api.semanticscholar.org/graph/v1"
 # Fields of each cited paper, requested flat (nested forms like authors.name are rejected).
 REFERENCE_FIELDS = "paperId,title,authors,externalIds,publicationDate,year,venue"
+# The same fields for the references of several papers in one /paper/batch call.
+BATCH_FIELDS = "paperId,referenceCount," + ",".join(
+    f"references.{field}" for field in REFERENCE_FIELDS.split(","))
 PAGE_SIZE = 1000     # maximum `limit` of /paper/{id}/references
 MAX_PAGES = 10       # Semantic Scholar stops paging at offset 10 000
 LOOKUP_BATCH = 500   # maximum number of IDs per /paper/batch call
+REFERENCE_BUDGET = 8000  # references asked per /paper/batch call (at most 9999 come back)
+BATCH_TIMEOUT = 180  # seconds; a call with 8 000 references takes about 15 s
 ARXIV_BATCH = 100    # IDs per arXiv API call when resolving submission dates
 MAX_FAILED_IN_A_ROW = 5  # the API is probably unreachable: stop
+# HTTP 400 for an answer above 10 MB: "Response would exceed maximum size.
+# Please retry with 78 or fewer ids"
+RETRY_WITH = re.compile(r"retry with (\d+) or fewer ids", re.IGNORECASE)
+BAD_BATCH_ANSWER = "unexpected /paper/batch response"
 
 EMPTY, UNAVAILABLE = "empty", "unavailable"
 FINAL_STATUSES = {SUCCESS, EMPTY, UNAVAILABLE, NOT_FOUND}
 COMPLETE, INCOMPLETE, UNRESOLVED = "complete", "incomplete", "unresolved"
+LOOKUP, BATCH, PER_PAPER = "lookup", "batch", "per_paper"  # how a paper was fetched
 
-# Columns of logs/references_log.csv: one row per paper and attempt.
+# Columns of logs/references_log.csv: one row per paper and attempt. "method"
+# is lookup (nothing more to fetch: not_found, empty, or the lookup failed),
+# batch (step 2: attempts are those of the shared call, seconds its time
+# divided among its papers) or per_paper (step 3).
 LOG_FIELDS = ["time", "arxiv_id", "status", "s2_paper_id", "s2_reference_count",
               "n_references", "n_with_arxiv_id", "n_unique_arxiv_id", "n_complete",
-              "n_incomplete", "n_unresolved", "pages", "attempts", "seconds", "error"]
+              "n_incomplete", "n_unresolved", "pages", "attempts", "seconds", "error",
+              "method"]
 
 
 # ---------------------------------------------------------------------------
@@ -134,11 +170,12 @@ class SemanticScholar:
         self.max_attempts = max_attempts
         self.throttled = 0  # number of HTTP 429 answers, for the summary line
 
-    def call(self, method: str, path: str, *, params=None, payload=None):
+    def call(self, method: str, path: str, *, params=None, payload=None, timeout: float = 60):
         """One API call. HTTP 429 is retried after RETRY_429_WAIT (up to
         MAX_429_RETRIES times); network errors and 5xx after 5, 10, 20, 40, 80 s
         (up to max_attempts). Returns (data, attempts, error, http_status);
-        `error` is "" on success."""
+        `error` is "" on success, and for another 4xx it ends with the reason
+        Semantic Scholar gives."""
         backoff, error, status = 5.0, "", None
         attempts = failures = throttled = 0
         while True:
@@ -147,11 +184,13 @@ class SemanticScholar:
             with self.limiter:
                 try:
                     response = self.session.request(method, f"{S2_API}/{path}", params=params,
-                                                    json=payload, timeout=60)
+                                                    json=payload, timeout=timeout)
                     status = response.status_code
                     if status == 200:
                         return response.json(), attempts, "", status
                     error = f"HTTP {status}"
+                    if 400 <= status < 500 and status != 429:  # e.g. an answer too large
+                        error += f": {' '.join(response.text.split())[:200]}"
                 except requests.RequestException as exc:  # also invalid JSON in a 200
                     error = f"{type(exc).__name__}: {exc}"
                     status = response.status_code if response is not None else None
@@ -182,6 +221,20 @@ class SemanticScholar:
         if not error and (not isinstance(data, list) or len(data) != len(arxiv_ids)):
             error = "unexpected /paper/batch response"
         return (None if error else dict(zip(arxiv_ids, data))), attempts, error
+
+    def references_batch(self, paper_ids: list[str]):
+        """The references of several papers (Semantic Scholar IDs) in one
+        /paper/batch call, with the fields references() asks for. Returns
+        (answers, attempts, error, http_status): `answers` lists the papers in
+        request order (null for an unknown ID), each with paperId,
+        referenceCount and references (paper objects, not wrapped in
+        citedPaper). The caller checks that every list is whole."""
+        data, attempts, error, status = self.call(
+            "POST", "paper/batch", params={"fields": BATCH_FIELDS},
+            payload={"ids": paper_ids}, timeout=BATCH_TIMEOUT)
+        if not error and (not isinstance(data, list) or len(data) != len(paper_ids)):
+            error = BAD_BATCH_ANSWER
+        return (None if error else data), attempts, error, status
 
     def references(self, paper_id: str):
         """Every reference of a paper, page by page until no `next` is left.
@@ -379,26 +432,92 @@ class DateWorker(threading.Thread):
 # Crawling
 # ---------------------------------------------------------------------------
 
-def crawl_paper(client: SemanticScholar, arxiv_id: str, s2_paper: dict | None):
-    """Fetch and normalize the references of one paper. Returns
-    (doc, attempts, error); doc is None when the API failed (api_error)."""
+def new_doc(arxiv_id: str, s2_paper: dict | None) -> dict:
+    """references_all document before any reference is fetched: not_found
+    (unknown to Semantic Scholar), empty (referenceCount 0), or still to fill."""
     doc = {"arxiv_id": arxiv_id, "status": NOT_FOUND, "s2_paper_id": None,
            "s2_reference_count": None, "pages": 0, "crawled_at": now_iso(),
            "arxiv_dates_complete": True, "references": []}
-    if s2_paper is None:
-        return doc, 0, ""
-    doc["s2_paper_id"] = s2_paper.get("paperId")
-    doc["s2_reference_count"] = count = s2_paper.get("referenceCount")
-    if count == 0:
-        doc["status"] = EMPTY
+    if s2_paper is not None:
+        doc["s2_paper_id"] = s2_paper.get("paperId")
+        doc["s2_reference_count"] = s2_paper.get("referenceCount")
+        if doc["s2_reference_count"] == 0:
+            doc["status"] = EMPTY
+    return doc
+
+
+def crawl_paper(client: SemanticScholar, arxiv_id: str, s2_paper: dict | None):
+    """Fetch and normalize the references of one paper, page by page (step 3).
+    Returns (doc, attempts, error); doc is None when the API failed (api_error)."""
+    doc = new_doc(arxiv_id, s2_paper)
+    if s2_paper is None or doc["status"] == EMPTY:
         return doc, 0, ""
 
     items, doc["pages"], attempts, error, status = client.references(doc["s2_paper_id"])
     if error:
         return (doc if status == 404 else None), attempts, error
+    count = doc["s2_reference_count"]
     doc["references"] = [normalize_reference(item) for item in items]
     doc["status"] = SUCCESS if items else UNAVAILABLE if (count or 0) > 0 else EMPTY
     return doc, attempts, ""
+
+
+def batch_doc(arxiv_id: str, s2_paper: dict, answer: dict | None) -> dict | None:
+    """Document from a /paper/batch answer (step 2), or None when the answer
+    is not certainly whole: then the paper goes to step 3. Kept only when it
+    is the paper of the lookup, with the same referenceCount, and lists at
+    least that many references (above 9999 references per call, Semantic
+    Scholar silently returns some papers short or empty)."""
+    if not isinstance(answer, dict) or answer.get("paperId") != s2_paper.get("paperId"):
+        return None
+    count, refs = answer.get("referenceCount"), answer.get("references")
+    if (count != s2_paper.get("referenceCount") or not isinstance(count, int) or count <= 0
+            or not isinstance(refs, list) or len(refs) < count):
+        return None
+    doc = new_doc(arxiv_id, s2_paper)
+    doc["references"] = [normalize_reference({"citedPaper": ref}) for ref in refs]
+    doc["status"] = SUCCESS
+    return doc
+
+
+def plan_groups(papers: list[tuple[str, dict]]) -> list[list[tuple[str, dict]]]:
+    """Split (arxiv_id, s2_paper) pairs, in order, into /paper/batch calls of
+    at most LOOKUP_BATCH papers and REFERENCE_BUDGET references."""
+    groups, group, size = [], [], 0
+    for arxiv_id, s2_paper in papers:
+        count = s2_paper["referenceCount"]
+        if group and (size + count > REFERENCE_BUDGET or len(group) >= LOOKUP_BATCH):
+            groups.append(group)
+            group, size = [], 0
+        group.append((arxiv_id, s2_paper))
+        size += count
+    if group:
+        groups.append(group)
+    return groups
+
+
+def fetch_group(client: SemanticScholar, group: list[tuple[str, dict]]):
+    """Step 2 for one group. Yields one item per /paper/batch call:
+    (ok, error, attempts, seconds_per_paper, [(arxiv_id, s2_paper, doc)]).
+    ok=False: the call failed (api_error for its papers). Otherwise doc is
+    None for a paper to fetch in step 3. An answer too large (HTTP 400) splits
+    the group into the size Semantic Scholar names, or in halves."""
+    started = time.perf_counter()
+    answers, attempts, error, status = client.references_batch([p["paperId"] for _, p in group])
+    seconds = (time.perf_counter() - started) / len(group)
+    refused = status is not None and 400 <= status < 500 and status != 429  # asking again won't help
+    if status == 400 and len(group) > 1:
+        match = RETRY_WITH.search(error)
+        size = int(match[1]) if match and 0 < int(match[1]) < len(group) else (len(group) + 1) // 2
+        yield True, "", attempts, 0.0, []
+        for start in range(0, len(group), size):
+            yield from fetch_group(client, group[start:start + size])
+    elif error and not refused and error != BAD_BATCH_ANSWER:  # Semantic Scholar failing
+        yield False, error, attempts, seconds, [(i, p, None) for i, p in group]
+    else:  # answered; or refused / malformed: the papers not returned whole go to step 3
+        answers = answers or [None] * len(group)
+        yield True, "", attempts, seconds, [(i, p, batch_doc(i, p, a))
+                                            for (i, p), a in zip(group, answers)]
 
 
 def save(layout: DataLayout, doc: dict) -> None:
@@ -417,7 +536,7 @@ def load_doc(layout: DataLayout, arxiv_id: str) -> dict | None:
 
 
 def log_paper(log: CsvLog, arxiv_id: str, status: str, doc: dict | None,
-              attempts: int, seconds: float, error: str) -> None:
+              attempts: int, seconds: float, error: str, method: str = PER_PAPER) -> None:
     doc = doc or {}
     refs = doc.get("references", [])
     with_arxiv = [r["ref_arxiv_id"] for r in refs if r["ref_arxiv_id"]]
@@ -429,7 +548,7 @@ def log_paper(log: CsvLog, arxiv_id: str, status: str, doc: dict | None,
               n_unique_arxiv_id=len(set(with_arxiv)), n_complete=quality.count(COMPLETE),
               n_incomplete=quality.count(INCOMPLETE), n_unresolved=quality.count(UNRESOLVED),
               pages=doc.get("pages", 0), attempts=attempts, seconds=round(seconds, 3),
-              error=error)
+              error=error, method=method)
 
 
 def run(papers: list[dict], layout: DataLayout, *, api_key: str | None = None,
@@ -461,32 +580,78 @@ def run(papers: list[dict], layout: DataLayout, *, api_key: str | None = None,
         worker.start()
 
     counts: dict[str, int] = {}
-    failed_in_a_row = 0
+    calls = {BATCH: 0, PER_PAPER: 0}  # step-2 calls, papers fetched in step 3
+    failed_in_a_row = shown = 0
+    started = time.perf_counter()
+
+    def record(arxiv_id, doc, attempts, seconds, error, method):
+        status = doc["status"] if doc else API_ERROR
+        if doc:
+            complete = dates.fill(doc)  # dates already cached, if any
+            save(layout, doc)           # saved now, again once dates are filled
+            if worker and not complete:
+                worker.inbox.put(doc)
+        log_paper(log, arxiv_id, status, doc, attempts, seconds, error, method)
+        counts[status] = counts.get(status, 0) + 1
+
+    def progress() -> None:
+        """A line every 100 papers (at most one per call) and at the end."""
+        nonlocal shown
+        done = sum(counts.values())
+        if done // 100 > shown // 100 or (done == len(todo) and done > shown):
+            shown = done
+            left = (time.perf_counter() - started) / done * (len(todo) - done)
+            print(f"[references] {done}/{len(todo)} | "
+                  + ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+                  + f" | {calls[BATCH]} batch calls, {calls[PER_PAPER]} papers one by one"
+                  + f" | about {left / 60:.0f} min left", flush=True)
+
+    def answered(ok: bool, error: str = "") -> None:
+        """Count failed calls in a row: a lookup, a batch call or a paper of
+        step 3 (a paper that needs no call neither fails nor succeeds)."""
+        nonlocal failed_in_a_row
+        failed_in_a_row = 0 if ok else failed_in_a_row + 1
+        if failed_in_a_row >= MAX_FAILED_IN_A_ROW:
+            raise RuntimeError(f"Semantic Scholar failed {failed_in_a_row} times in a row: {error}")
+
     try:
         for start in range(0, len(todo), LOOKUP_BATCH):
             chunk = todo[start:start + LOOKUP_BATCH]
-            found, lookup_attempts, error = client.lookup(chunk)
+            found, lookup_attempts, error = client.lookup(chunk)  # step 1
             if error:
                 for arxiv_id in chunk:
-                    log_paper(log, arxiv_id, API_ERROR, None, lookup_attempts, 0, f"lookup: {error}")
-                counts[API_ERROR] = counts.get(API_ERROR, 0) + len(chunk)
-                failed_in_a_row += 1
-            for arxiv_id in [] if error else chunk:
-                started = time.perf_counter()
-                doc, attempts, error = crawl_paper(client, arxiv_id, found[arxiv_id])
-                status = doc["status"] if doc else API_ERROR
-                failed_in_a_row = failed_in_a_row + 1 if doc is None else 0
-                if doc:
-                    complete = dates.fill(doc)  # dates already cached, if any
-                    save(layout, doc)           # saved now, again once dates are filled
-                    if worker and not complete:
-                        worker.inbox.put(doc)
-                log_paper(log, arxiv_id, status, doc, attempts, time.perf_counter() - started, error)
-                counts[status] = counts.get(status, 0) + 1
-                if failed_in_a_row >= MAX_FAILED_IN_A_ROW:
-                    break
-            if failed_in_a_row >= MAX_FAILED_IN_A_ROW:
-                raise RuntimeError(f"Semantic Scholar failed {failed_in_a_row} times in a row: {error}")
+                    record(arxiv_id, None, lookup_attempts, 0, f"lookup: {error}", LOOKUP)
+                progress()
+                answered(False, error)
+                continue
+            grouped, one_by_one = [], []
+            for arxiv_id in chunk:
+                s2_paper = found[arxiv_id]
+                count = (s2_paper or {}).get("referenceCount")
+                if s2_paper is None or count == 0:  # not_found or empty: nothing to fetch
+                    record(arxiv_id, new_doc(arxiv_id, s2_paper), 0, 0, "", LOOKUP)
+                elif isinstance(count, int) and 0 < count <= PAGE_SIZE and s2_paper.get("paperId"):
+                    grouped.append((arxiv_id, s2_paper))
+                else:
+                    one_by_one.append((arxiv_id, s2_paper))
+            for group in plan_groups(grouped):  # step 2
+                for ok, error, attempts, seconds, results in fetch_group(client, group):
+                    calls[BATCH] += 1
+                    for arxiv_id, s2_paper, doc in results:
+                        if doc or not ok:
+                            record(arxiv_id, doc, attempts, seconds, "" if ok else f"batch: {error}", BATCH)
+                        else:
+                            one_by_one.append((arxiv_id, s2_paper))
+                    progress()
+                    answered(ok, error)
+            for arxiv_id, s2_paper in one_by_one:  # step 3
+                paper_started = time.perf_counter()
+                doc, attempts, error = crawl_paper(client, arxiv_id, s2_paper)
+                calls[PER_PAPER] += 1
+                record(arxiv_id, doc, attempts, time.perf_counter() - paper_started, error, PER_PAPER)
+                progress()
+                answered(doc is not None, error)
+            progress()
     finally:
         if worker:  # even after an error, resolve the dates already queued
             print("[references] Semantic Scholar done; finishing arXiv date lookups")
@@ -494,7 +659,8 @@ def run(papers: list[dict], layout: DataLayout, *, api_key: str | None = None,
 
     summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "nothing new"
     print(f"[references] {summary}; {len(worker.pending) if worker else 0} papers still missing arXiv dates; "
-          f"{getattr(client, 'throttled', 0)} HTTP 429 retried")
+          f"{getattr(client, 'throttled', 0)} HTTP 429 retried; {calls[BATCH]} batch calls, "
+          f"{calls[PER_PAPER]} papers fetched one by one")
     return counts
 
 

@@ -192,9 +192,13 @@ def discover_range(start: RangeBound, end: RangeBound, session, manifest: Manife
     were a gap; if the month ends there, they were never part of the range.
 
     IDs already resolved in an earlier run are not asked again, so the function
-    can simply be re-run after an interruption. `limit` keeps only the first
-    `limit` IDs (trial runs). Returns the records of every ID in the range,
-    in order.
+    can simply be re-run after an interruption. A "not_found" is final, so IDs
+    left out of an answer are asked about once more first: the arXiv API
+    sometimes sends a valid feed with entries missing, even an empty one
+    (https://github.com/lukasschwab/arxiv.py/issues/43), and without this
+    second call such a glitch would drop up to a whole batch for good, or end
+    an open month too early. `limit` keeps only the first `limit` IDs (trial
+    runs). Returns the records of every ID in the range, in order.
     """
     if query is None:
         def query(ids):
@@ -208,6 +212,15 @@ def discover_range(start: RangeBound, end: RangeBound, session, manifest: Manife
     def save(record: dict) -> None:
         manifest.append(record)
         done[record["arxiv_id"]] = record
+
+    def ask(ids: list[str], stage: str) -> tuple[list[dict], str]:
+        """One API call, logged in arxiv_api_log.csv: (entries, error)."""
+        started = time.perf_counter()
+        entries, attempts, error = query(ids)
+        log.write(time=now_iso(), stage=stage, first_id=ids[0], last_id=ids[-1],
+                  requested=len(ids), returned=len(entries), attempts=attempts,
+                  seconds=round(time.perf_counter() - started, 3), error=error)
+        return entries, error
 
     for yymm in months_between(start.yymm, end.yymm):
         number = start.number if yymm == start.yymm else 1
@@ -227,26 +240,23 @@ def discover_range(start: RangeBound, end: RangeBound, session, manifest: Manife
             todo = [i for i in ids if done.get(i, {}).get("status") not in (SUCCESS, NOT_FOUND)]
             error = ""
             if todo:
-                started = time.perf_counter()
-                entries, attempts, error = query(todo)
-                log.write(time=now_iso(), stage="discovery", first_id=todo[0], last_id=todo[-1],
-                          requested=len(todo), returned=len(entries), attempts=attempts,
-                          seconds=round(time.perf_counter() - started, 3), error=error)
-                if error:
-                    failed_in_a_row += 1
-                    for arxiv_id in todo:
+                entries, error = ask(todo, "discovery")
+                by_id = {entry["arxiv_id"]: entry for entry in entries}
+                missing = [i for i in todo if i not in by_id]
+                if missing and not error:  # gaps are final: make sure first (see docstring)
+                    again, error = ask(missing, "discovery_recheck")
+                    by_id.update((entry["arxiv_id"], entry) for entry in again)
+                failed_in_a_row = failed_in_a_row + 1 if error else 0
+                for arxiv_id in todo:
+                    entry = by_id.get(arxiv_id)
+                    if entry is not None:
+                        save(_record(arxiv_id, SUCCESS, latest_version=entry["version"],
+                                     versions=[f"v{v}" for v in range(1, entry["version"] + 1)],
+                                     latest=entry))
+                    elif error:  # unknown yet: asked again on the next run
                         save(_record(arxiv_id, API_ERROR, error=error))
-                    if failed_in_a_row >= MAX_FAILED_BATCHES:
-                        raise RuntimeError(f"arXiv API failed {failed_in_a_row} batches in a row: {error}")
-                else:
-                    failed_in_a_row = 0
-                    by_id = {entry["arxiv_id"]: entry for entry in entries}
-                    for arxiv_id in todo:
-                        entry = by_id.get(arxiv_id)
-                        if entry is not None:
-                            save(_record(arxiv_id, SUCCESS, latest_version=entry["version"],
-                                         versions=[f"v{v}" for v in range(1, entry["version"] + 1)],
-                                         latest=entry))
+                if failed_in_a_row >= MAX_FAILED_BATCHES:
+                    raise RuntimeError(f"arXiv API failed {failed_in_a_row} batches in a row: {error}")
 
             found = [i for i in ids if done.get(i, {}).get("status") == SUCCESS]
             absent = [] if error else [i for i in todo if i not in found]

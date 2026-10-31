@@ -12,8 +12,11 @@ turns it into corpus/<yymm-id>/<version>/ with only the .tex/.bib files:
         v2/                  empty folder: v2 is pdf_only or no_tex
 
 Each version is fetched on its own from https://export.arxiv.org/src/<id>v<N>,
-through the shared rate_limiter.ARXIV (3 s between requests, one connection at
-a time, shared with discovery and metadata).
+through the shared rate_limiter.ARXIV_EXPORT: the pace arXiv's bulk data page
+suggests for export.arxiv.org (bursts of 4 requests 0.25 s apart, then 1 s
+without any) and up to 6 connections at once, shared with the API calls of
+discovery, metadata and references. run() works on up to 6 papers at once,
+one thread each, so a download never waits for another paper's extraction.
 
 Steps for one version (process_version):
   1. download into work/downloads/<yymm-id><vN>.part, streamed to disk;
@@ -37,8 +40,10 @@ Called by main.py as run(papers, layout); can also run alone:
 from __future__ import annotations
 
 import argparse
+import queue
 import shutil
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,7 +54,8 @@ from urllib3.exceptions import HTTPError as Urllib3Error
 from checkpoint import VersionStore
 from common import FAILED, NOT_FOUND, SUCCESS, CsvLog, DataLayout, Manifest, now_iso
 from extractor import CorruptSourceError, IncompleteSourceError, extract_source
-from rate_limiter import ARXIV, RETRY_STATUS, RateLimiter, _retry_after_seconds, make_session
+from rate_limiter import (ARXIV_EXPORT, RETRY_STATUS, RateLimiter, _retry_after_seconds,
+                          make_session)
 
 SRC_URL = "https://export.arxiv.org/src/{versioned_id}"
 
@@ -60,8 +66,9 @@ MAX_HTTP_ATTEMPTS = 5  # per download: failed requests in a row with no new byte
 FIRST_BACKOFF = 3.0    # seconds before the first retry, doubled after each one
 MAX_REQUESTS = 30      # per download, counting the requests that resumed a broken body
 MAX_DOWNLOADS = 3      # per version and run: downloads of a body that turned out cut off
-# Stop the stage when this many versions in a row fail: arXiv is probably
-# blocking us (403) or unreachable, and going on would only add failures.
+# Stop the stage when this many versions in a row fail (in the order they
+# finish): arXiv is probably blocking us (403) or unreachable, and going on
+# would only add failures.
 MAX_FAILED_IN_A_ROW = 10
 
 # Columns of logs/download_log.csv: one row per processed version.
@@ -83,6 +90,8 @@ class Download:
     attempts      HTTP requests made
     seconds       wall time spent, waits included
     error         "" when ok, otherwise what went wrong
+    deferred      True when the file was put aside for a later pass because
+                  it kept failing while arXiv answered other requests
     """
 
     ok: bool
@@ -91,6 +100,7 @@ class Download:
     attempts: int
     seconds: float
     error: str = ""
+    deferred: bool = False
 
 
 def _content_range_start_total(header: str | None) -> tuple[int | None, int | None]:
@@ -111,14 +121,15 @@ def _content_range_start_total(header: str | None) -> tuple[int | None, int | No
 
 
 def fetch_source(session: requests.Session, versioned_id: str, target: Path, *,
-                 limiter: RateLimiter = ARXIV,
+                 limiter: RateLimiter = ARXIV_EXPORT,
                  max_attempts: int = MAX_HTTP_ATTEMPTS) -> Download:
     """Download the source of one version (e.g. "2604.05535v2") into `target`.
 
-    The body is streamed to disk while the limiter is held, so only one
-    connection to arXiv is open and the RAM use does not depend on the file
-    size. The bytes are saved exactly as sent (no automatic gunzip), so
-    extractor.py sees the real format and the size is the real download size.
+    The body is streamed to disk while the limiter is held, so the limiter
+    counts the connection until the whole file is saved, and the RAM use does
+    not depend on the file size. The bytes are saved exactly as sent (no
+    automatic gunzip), so extractor.py sees the real format and the size is
+    the real download size.
 
     Resuming: when the connection breaks in the middle of the body, the next
     request asks only for the missing part (HTTP `Range: bytes=<saved>-`)
@@ -133,7 +144,10 @@ def fetch_source(session: requests.Session, versioned_id: str, target: Path, *,
     and 5xx are retried with a doubling backoff (or the server's Retry-After).
     `max_attempts` counts the requests that brought no new byte; a request
     that made progress does not use one up (at most MAX_REQUESTS requests in
-    total). Other statuses such as 404 or 403 are returned at once.
+    total). Other statuses such as 404 or 403 are returned at once. A file
+    that keeps failing on its own while arXiv answers other requests
+    (limiter.should_defer, see rate_limiter.py) is not asked for again: it is
+    returned as failed with deferred=True and tried again in a later pass.
     """
     url = SRC_URL.format(versioned_id=versioned_id)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -205,6 +219,11 @@ def fetch_source(session: requests.Session, versioned_id: str, target: Path, *,
             without_progress, backoff = 0, FIRST_BACKOFF  # progress: resume right away
             continue
         without_progress += 1
+        if limiter.should_defer(url):
+            error += "; put aside for a later pass (this file keeps failing, other files download)"
+            limiter.deferred(url, error)
+            return Download(False, status, size, requests_made,
+                            round(time.perf_counter() - started, 3), error, deferred=True)
         if without_progress < max_attempts:
             time.sleep(max(backoff, retry_after))
             backoff *= 2
@@ -233,7 +252,7 @@ def _verify(folder: Path, kept_files: list[str]) -> str:
 
 def process_version(paper: dict, version: str, layout: DataLayout, session: requests.Session,
                     store: VersionStore, log: CsvLog, *,
-                    limiter: RateLimiter = ARXIV) -> dict:
+                    limiter: RateLimiter = ARXIV_EXPORT) -> dict:
     """Download, extract and record one version of one paper.
 
     `paper` is a manifest record (arxiv_id, folder, versions...), `version` is
@@ -262,6 +281,8 @@ def process_version(paper: dict, version: str, layout: DataLayout, session: requ
             if not download.ok:
                 record["status"] = NOT_FOUND if download.http_status == 404 else FAILED
                 record["error"] = download.error
+                if download.deferred:
+                    record["deferred"] = True
                 break
 
             _remove(tmp_dir)
@@ -315,47 +336,117 @@ def process_version(paper: dict, version: str, layout: DataLayout, session: requ
     return record
 
 
+def _next_result(results: queue.Queue):
+    """Next item of `results`, waiting in short steps so that Ctrl+C stays
+    responsive when run() is in the main thread (python src/downloader.py)."""
+    while True:
+        try:
+            return results.get(timeout=1.0)
+        except queue.Empty:
+            continue
+
+
 def run(papers: list[dict], layout: DataLayout, *, session: requests.Session | None = None,
-        limiter: RateLimiter = ARXIV) -> dict[str, int]:
+        limiter: RateLimiter = ARXIV_EXPORT, workers: int | None = None) -> dict[str, int]:
     """Download every version of every paper in `papers` (main.py contract).
 
     `papers` are manifest records with status "success". Versions already
     final in versions.json are skipped, so the function can be called again
-    after an interruption. Returns the number of versions per status
-    processed in this call (plus "skipped" for those already done).
+    after an interruption. Papers with a version that failed in an earlier
+    pass or run come last, and that file is put aside again after one more
+    failure (limiter.mark_suspect), so a source arXiv cannot serve now does
+    not hold up the others. Returns the number of versions per status
+    processed in this call (plus "skipped" for those already done and
+    "deferred" for the failed ones put aside for a later pass).
+
+    `workers` papers (by default as many as the limiter's connections, 6)
+    are processed at once, each in its own thread: while one thread waits
+    for its file or extracts it, the others download, and only the limiter
+    decides when a request may start. The versions of one paper stay in one
+    thread, in order, because they share versions.json. Daemon threads, as
+    in main.run_parallel, so that Stop (Ctrl+C) ends the program at once;
+    work cut off this way is redone by the next run.
     """
     session = session or make_session()
     log = CsvLog(layout.logs / "download_log.csv", DOWNLOAD_LOG_FIELDS)
-    todo = []
+    todo: queue.Queue = queue.Queue()  # (paper, versions to process, store), one per paper
     counts: dict[str, int] = {"skipped": 0}
+    total = 0
+    fresh, failed_before = [], []  # papers with a version that failed earlier go last
     for paper in papers:
         store = VersionStore(layout.paper_dir(paper["arxiv_id"]), paper["arxiv_id"])
+        versions, retried = [], False
         for version in paper["versions"]:
             if store.is_final(version):
                 counts["skipped"] += 1
-            else:
-                todo.append((paper, version, store))
+                continue
+            versions.append(version)
+            if (store.get(version) or {}).get("status") == FAILED:
+                retried = True  # one failure of this file is now enough to put it aside
+                limiter.mark_suspect(SRC_URL.format(versioned_id=f"{paper['arxiv_id']}{version}"))
+        if versions:
+            (failed_before if retried else fresh).append((paper, versions, store))
+            total += len(versions)
+    for item in fresh + failed_before:
+        todo.put(item)
 
-    print(f"[download] {len(todo)} versions to process, {counts['skipped']} already done")
+    workers = max(1, min(workers or limiter.connections, todo.qsize()))
+    print(f"[download] {total} versions to process, {counts['skipped']} already done "
+          f"({workers} papers at a time)"
+          + (f"; {len(failed_before)} papers that failed before go last" if failed_before else ""))
+    results: queue.Queue = queue.Queue()  # (paper, version, record or exception)
+    stop = threading.Event()  # set when run() ends early: take no new version
+
+    def worker() -> None:
+        while not stop.is_set():
+            try:
+                paper, versions, store = todo.get_nowait()
+            except queue.Empty:
+                return
+            for version in versions:
+                if stop.is_set():
+                    return
+                try:
+                    record = process_version(paper, version, layout, session, store, log,
+                                             limiter=limiter)
+                except BaseException as exc:  # handed over to the thread that called run()
+                    results.put((paper, version, exc))
+                    return
+                results.put((paper, version, record))
+
+    for number in range(workers):
+        threading.Thread(target=worker, name=f"download-{number + 1}", daemon=True).start()
+
     failed_in_a_row = 0
     started = time.perf_counter()
-    for done, (paper, version, store) in enumerate(todo, start=1):
-        record = process_version(paper, version, layout, session, store, log, limiter=limiter)
-        status = record["status"]
-        counts[status] = counts.get(status, 0) + 1
-        if status == FAILED:
-            failed_in_a_row += 1
-            print(f"[download] {paper['arxiv_id']}{version} failed: {record['error']}")
-            if failed_in_a_row >= MAX_FAILED_IN_A_ROW:
-                raise RuntimeError(f"{failed_in_a_row} versions failed in a row, last error: "
-                                   f"{record['error']}; re-run later to resume")
-        else:
-            failed_in_a_row = 0
-        if done % 50 == 0 or done == len(todo):
-            elapsed = time.perf_counter() - started
-            left = elapsed / done * (len(todo) - done)
-            summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
-            print(f"[download] {done}/{len(todo)} | {summary} | about {left / 60:.0f} min left")
+    try:
+        for done in range(1, total + 1):
+            paper, version, record = _next_result(results)
+            if isinstance(record, BaseException):
+                raise record  # e.g. ArxivUnavailable or a full disk: stop the stage
+            status = record["status"]
+            counts[status] = counts.get(status, 0) + 1
+            if status == FAILED:
+                print(f"[download] {paper['arxiv_id']}{version} failed: {record['error']}")
+            if record.get("deferred"):
+                # A file with a problem of its own, while arXiv answers the others:
+                # no sign that arXiv blocks us, so the run of failures is neither
+                # extended nor ended.
+                counts["deferred"] = counts.get("deferred", 0) + 1
+            elif status == FAILED:
+                failed_in_a_row += 1
+                if failed_in_a_row >= MAX_FAILED_IN_A_ROW:
+                    raise RuntimeError(f"{failed_in_a_row} versions failed in a row, last error: "
+                                       f"{record['error']}; re-run later to resume")
+            else:
+                failed_in_a_row = 0
+            if done % 50 == 0 or done == total:
+                elapsed = time.perf_counter() - started
+                left = elapsed / done * (total - done)
+                summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+                print(f"[download] {done}/{total} | {summary} | about {left / 60:.0f} min left")
+    finally:
+        stop.set()
     return counts
 
 
