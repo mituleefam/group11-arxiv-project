@@ -108,7 +108,9 @@ failed ones are tried again. `main.py` exits only when every selected stage has
 finished, so after `[download] finished` it may still be waiting for the
 references stage.
 
-**The group's ranges on Colab (benchmark).** The Colab notebook runs
+**The group's ranges on Colab (benchmark).** The Colab notebook
+`src/chay-crawler-nhom-final.ipynb` (the official run; `src/chay-thu-crawler-nhom.ipynb`
+runs the same steps on a short trial range, in a separate Drive folder) runs
 `python src/chunked_crawl.py plan.json`: the ranges are crawled one after the
 other, on the runtime's own disk (Google Drive is too slow for the crawler's
 many small files), in steps of 1000 papers, each step under `benchmark.py`.

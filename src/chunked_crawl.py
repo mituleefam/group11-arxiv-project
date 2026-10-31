@@ -44,7 +44,7 @@ plan.json (written by the Colab notebook):
     {"chunk_size": 1000, "kaggle_dates": true, "max_wait_minutes": 30,
      "runs": [{"name": "AQuan", "start": "2605.12338", "end": "2605.17337",
                "data_dir": "/content/g11/AQuan_2605-12338_2605-17337",
-               "backup_dir": ".../group11-data/03_benchmark/AQuan_2605-12338_2605-17337"}]}
+               "backup_dir": ".../group11-data/chinh_thuc/AQuan_2605-12338_2605-17337"}]}
 "kaggle_snapshot": a copy of the Kaggle file already on disk, used instead of
 downloading it (ref_dates_kaggle.py --snapshot).
 
