@@ -41,6 +41,8 @@ Where the numbers come from (<data-dir>/logs unless noted):
                          refused or did not answer (arxiv_throttle_log.csv)
     arxiv_deferred       source files put aside for a later pass because they
                          kept failing while the others downloaded
+    arxiv_route_pauses   refusals that paused one route (Colab, WARP, a proxy)
+                         while the other routes went on
     ram_*, data_dir_*    benchmark.py samples: RSS of the crawler's process
                          tree and size of the data folder
     ids, papers          work/paper_manifest.jsonl
@@ -91,7 +93,8 @@ COLUMNS = (["member", "data_dir", "first_id", "last_id", "ids", "papers", "ids_n
               "data_dir_final_bytes", "arxiv_requests", "arxiv_api_requests",
               "arxiv_download_requests", "arxiv_floor_seconds",
               "arxiv_pause_seconds", "arxiv_pauses", "arxiv_isolated_failures",
-              "arxiv_deferred", "arxiv_give_ups"] + [f"left_{k}" for k in LEFT_KEYS])
+              "arxiv_deferred", "arxiv_route_pauses", "arxiv_give_ups"]
+           + [f"left_{k}" for k in LEFT_KEYS])
 HIGHEST = {"ram_peak_bytes", "data_dir_peak_bytes"}  # the group row keeps the highest; others are added
 
 
@@ -201,6 +204,7 @@ def member_row(name: str, root: Path, warnings: list[str]) -> dict:
     row.update(arxiv_pause_seconds=pause, arxiv_pauses=events.get("pause", 0),
                arxiv_isolated_failures=events.get("isolated", 0),
                arxiv_deferred=events.get("defer", 0),
+               arxiv_route_pauses=events.get("route_pause", 0),
                arxiv_give_ups=events.get("give_up", 0))
     return tidy(row)
 

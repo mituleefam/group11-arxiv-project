@@ -14,8 +14,8 @@ turns it into corpus/<yymm-id>/<version>/ with only the .tex/.bib files:
 Each version is fetched on its own from https://export.arxiv.org/src/<id>v<N>,
 through the shared rate_limiter.ARXIV_EXPORT: the pace arXiv's bulk data page
 suggests for export.arxiv.org (bursts of 4 requests 0.25 s apart, then 1 s
-without any) and up to 4 connections at once, shared with the API calls of
-discovery, metadata and references. run() works on up to 4 papers at once,
+without any) and up to 6 connections at once, shared with the API calls of
+discovery, metadata and references. run() works on up to 6 papers at once,
 one thread each, so a download never waits for another paper's extraction.
 
 Steps for one version (process_version):
@@ -359,7 +359,7 @@ def run(papers: list[dict], layout: DataLayout, *, session: requests.Session | N
     processed in this call (plus "skipped" for those already done and
     "deferred" for the failed ones put aside for a later pass).
 
-    `workers` papers (by default as many as the limiter's connections, 4)
+    `workers` papers (by default as many as the limiter's connections, 6)
     are processed at once, each in its own thread: while one thread waits
     for its file or extracts it, the others download, and only the limiter
     decides when a request may start. The versions of one paper stay in one

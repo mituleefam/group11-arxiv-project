@@ -15,9 +15,10 @@ pace that covers its requests instead of sleeping on its own:
     "the dedicated site export.arxiv.org", and "we suggest that a *reasonable
     rate* to be bursts at 4 requests per second with a 1 second `sleep`, per
     burst". Read here as: at most 4 requests start, 0.25 s apart, then none
-    for 1 s, i.e. 2 requests per second on average, with up to 4 downloads
-    open at once (a source file often takes longer than 0.25 s to arrive, and
-    the page sets no connection limit for this pace).
+    for 1 s, i.e. 2 requests per second on average, with up to 6 downloads
+    open at once (a source file often takes several seconds to arrive, so 4
+    open downloads could not keep this pace; the page sets no connection
+    limit, and more connections do not start more requests per second).
 
 The Terms add that the rate limits "apply to all of the machines under your
 control as a whole", that "You should not attempt to overcome these limits by
@@ -66,6 +67,19 @@ every module and thread, which those per-call decorators do not provide):
     the files it refused are asked for at most twice. API calls keep the two
     rules above.
   * Any normal answer ends a run of refusals.
+
+Routes (Colab's own network, WARP, the Webshare proxies; see ProxyPool):
+when a refusal above would pause every request, and the request went
+through a route while another route that serves the same kind of request
+(source files: Colab and WARP; API calls: every route) is not paused, only
+that route pauses instead: 15 s, doubled at each new refusal of that route
+up to 5 minutes, back to 15 s after it serves a request. ProxyPool skips a
+paused route, so the other routes go on at the same shared pace (the routes
+never add up to more than the pace above). The refusal that leaves no other
+route pauses every request as above. Without WARP or proxies there is one
+route, and every refusal pauses every request, as before. Route pauses are
+logged as "route_pause" in arxiv_throttle_log.csv; they do not count in
+total_paused_seconds, since requests went on through the other routes.
 
 arXiv never says how long it will keep refusing. The pauses are therefore not
 a guess of when the refusal ends, but how often requests check whether it has
@@ -154,6 +168,52 @@ def _quarantine(proxy: str, reason: str) -> None:
               f"(request được thử lại qua đường kế tiếp; không tính là arXiv từ chối)", flush=True)
 
 
+# Routes refused by arXiv (HTTP 429, or 503 on several files): skipped by ProxyPool until
+# then, while the other routes go on (see "Routes" above). '' is Colab's own network.
+ROUTE_COOLDOWN, ROUTE_MAX_COOLDOWN = 15.0, 300.0
+_route_paused_until: dict[str, float] = {}
+_route_next_cooldown: dict[str, float] = {}
+
+
+def _route_name(route: str) -> str:
+    if not route:
+        return "Colab"
+    if route.endswith(f"{WARP_HOST}:{WARP_PORT}"):
+        return "WARP"
+    return _mask(route)
+
+
+def _pause_route(route: str, url: str, retry_after: float) -> float | None:
+    """Pause `route` alone when another route that serves `url` is not
+    paused; returns the pause in seconds (0 when it was already paused), or
+    None when no route would be left (the caller then pauses every request)."""
+    routes = _UNLIMITED_LIST if _is_source(url) else PROXIES
+    with _bad_lock:
+        now = time.monotonic()
+        others = [r for r in routes if r != route and _route_paused_until.get(r, 0.0) <= now
+                  and (not r or _bad_until.get(r, 0.0) <= now)]
+        if not others:
+            return None
+        if _route_paused_until.get(route, 0.0) > now:  # same episode: do not double again
+            _route_paused_until[route] = max(_route_paused_until[route], now + retry_after)
+            return 0.0
+        pause = max(_route_next_cooldown.get(route, ROUTE_COOLDOWN), retry_after)
+        _route_paused_until[route] = now + pause
+        _route_next_cooldown[route] = min(pause * 2, ROUTE_MAX_COOLDOWN)
+    return pause
+
+
+def _route_served(route: str) -> None:
+    """`route` got a normal answer: its next refusal pauses it for 15 s again."""
+    if route in _route_next_cooldown:
+        with _bad_lock:
+            _route_next_cooldown.pop(route, None)
+
+
+def _is_source(url: str) -> bool:
+    return "/src/" in url or "/pdf/" in url or "/e-print/" in url
+
+
 def _has_explicit_proxy(proxies) -> bool:
     """True khi request đã có proxy thật cho http/https (người gọi truyền vào, hoặc HTTPS_PROXY
     của máy). Dict chỉ có khoá lạ như 'no' (từ NO_PROXY) không tính, nên vẫn xoay được."""
@@ -178,7 +238,8 @@ def _load_external_proxies() -> list[str]:
 
 class ProxyPool:
     """Xoay vòng: mỗi request lấy proxy kế tiếp trong danh sách (thread-safe),
-    bỏ qua proxy đang tạm nghỉ vì vừa lỗi; '' (mạng gốc) không bao giờ bị bỏ qua."""
+    bỏ qua proxy đang tạm nghỉ vì vừa lỗi kết nối, và đường (kể cả '' = mạng gốc)
+    đang tạm dừng vì arXiv vừa từ chối nó."""
 
     def __init__(self, proxy_urls: list[str] | None = None):
         self._proxies = list(proxy_urls) if proxy_urls is not None else []
@@ -194,9 +255,12 @@ class ProxyPool:
             for _ in range(len(self._proxies)):
                 proxy = self._proxies[self._i % len(self._proxies)]
                 self._i += 1
+                if _route_paused_until.get(proxy, 0.0) > now:
+                    continue
                 if not proxy or _bad_until.get(proxy, 0.0) <= now:
                     return proxy
-            return ""  # mọi proxy đang tạm nghỉ: đi mạng gốc
+            # mọi đường đang nghỉ: đường hết dừng sớm nhất (cùng lúc thì mạng gốc)
+            return min(self._proxies, key=lambda p: (_route_paused_until.get(p, 0.0), bool(p)))
 
     def next_proxies_dict(self) -> dict[str, str] | None:
         """Trả về dict proxies chuẩn cho thư viện requests (chuỗi '' = dùng mạng gốc)."""
@@ -394,10 +458,11 @@ class RateLimiter:
               f"(refused for {so_far} so far{limit})", flush=True)
         self._log("pause", reason, pause, total, url)
 
-    def refused(self, url: str, retry_after: float = 0.0) -> None:
+    def refused(self, url: str, retry_after: float = 0.0, route: str | None = None) -> None:
         """HTTP 429. For a file that failed before, one more failure of that
         file (see failed()); for anything else every request would be
-        refused: throttled()."""
+        refused: throttled(), or only `route` pauses when another route can
+        take the requests (see "Routes" in the module docstring)."""
         if not self.cooldown:
             return
         with self._state:
@@ -405,12 +470,27 @@ class RateLimiter:
             if not own and self._is_file(url):
                 self._file_failures[url] = self._file_failures.get(url, 0) + 1
         if own:
-            self.failed(url, "HTTP 429", retry_after)
-        else:
+            self.failed(url, "HTTP 429", retry_after, route=route)
+        elif not self._route_refused(route, url, retry_after, "HTTP 429"):
             self.throttled(retry_after, url, "HTTP 429")
 
+    def _route_refused(self, route: str | None, url: str, retry_after: float, reason: str) -> bool:
+        """Pause `route` alone if another route can take the requests;
+        False when every request has to pause."""
+        if route is None:
+            return False
+        pause = _pause_route(route, url, retry_after)
+        if pause is None:
+            return False
+        if pause:
+            print(f"[{self.name}] {reason} via {_route_name(route)}: pausing this route for "
+                  f"{pause:.0f} s, the other routes go on", flush=True)
+            self._log("route_pause", f"{reason} via {_route_name(route)}", pause,
+                      self.paused_seconds, url)
+        return True
+
     def failed(self, url: str, reason: str, retry_after: float = 0.0,
-               slow_down: bool = False) -> None:
+               slow_down: bool = False, route: str | None = None) -> None:
         """A request failed in a way that may concern this URL only (HTTP 503,
         no answer). Its caller retries it with its own backoff while the other
         requests go on. If a different URL failed too within
@@ -436,7 +516,8 @@ class RateLimiter:
                     self.isolated_count += 1
                 new_url = last is None or last[0] != url
         if general:
-            self.throttled(retry_after, url, f"{reason} on several files", slow_down)
+            if not self._route_refused(route, url, retry_after, f"{reason} on several files"):
+                self.throttled(retry_after, url, f"{reason} on several files", slow_down)
             return
         if new_url:
             print(f"[{self.name}] {reason} for one file only: retrying it later, "
@@ -533,7 +614,7 @@ class RateLimiter:
 
 # Every request sent to arXiv: /src/ downloads directly, API calls through
 # ARXIV. Pace of the bulk data page; refusals pause every arXiv request.
-ARXIV_EXPORT = RateLimiter(min_interval=0.25, burst=4, burst_pause=1.0, connections=4,
+ARXIV_EXPORT = RateLimiter(min_interval=0.25, burst=4, burst_pause=1.0, connections=6,
                            cooldown=15.0, max_cooldown=300.0, slow_interval=6.0,
                            recover_after=30, give_up_after=1800.0,
                            isolation_window=120.0, name="arXiv",
@@ -551,16 +632,20 @@ def _is_arxiv(url: str) -> bool:
 
 
 def _report_to_arxiv_limiter(response, *args, **kwargs):
-    """requests response hook: tell ARXIV_EXPORT how arXiv answered."""
+    """requests response hook: tell ARXIV_EXPORT how arXiv answered, and
+    through which route (set by _ArxivAdapter)."""
     if _is_arxiv(response.url):
         status = response.status_code
+        route = getattr(response, "arxiv_route", None)
         if status == 429:    # overloaded for everyone (or a file that keeps failing)
-            ARXIV_EXPORT.refused(response.url, _retry_after_seconds(response))
+            ARXIV_EXPORT.refused(response.url, _retry_after_seconds(response), route=route)
         elif status == 503:  # this file, or excessive use if it spreads
             ARXIV_EXPORT.failed(response.url, "HTTP 503", _retry_after_seconds(response),
-                                slow_down=True)
+                                slow_down=True, route=route)
         elif status < 400:
             ARXIV_EXPORT.succeeded(response.url)
+            if route is not None:
+                _route_served(route)
     return None  # keep the response unchanged
 
 
@@ -581,21 +666,29 @@ class _ArxivAdapter(HTTPAdapter):
 
     def send(self, request, *args, **kwargs):
         chosen = ""  # proxy dùng cho request này; '' = mạng gốc
-        if _is_arxiv(request.url) and not _has_explicit_proxy(kwargs.get("proxies")):
-            if "/src/" in request.url or "/pdf/" in request.url or "/e-print/" in request.url:
-                chosen = UNLIMITED_POOL.next() or ""
-            elif self.proxy_pool:
-                chosen = self.proxy_pool.next() or ""
+        route = None  # đường của request, để limiter dừng riêng đường bị arXiv từ chối
+        if _is_arxiv(request.url):
+            explicit = kwargs.get("proxies")
+            if _has_explicit_proxy(explicit):
+                route = explicit.get("https") or explicit.get("http") or ""
+            else:
+                if _is_source(request.url):
+                    chosen = UNLIMITED_POOL.next() or ""
+                elif self.proxy_pool:
+                    chosen = self.proxy_pool.next() or ""
+                route = chosen
             if chosen:
                 kwargs["proxies"] = {"http": chosen, "https": chosen}
 
         try:
-            return super().send(request, *args, **kwargs)
+            response = super().send(request, *args, **kwargs)
+            response.arxiv_route = route  # read by _report_to_arxiv_limiter
+            return response
         except (requests.ConnectionError, requests.Timeout) as exc:
             if chosen:  # proxy/WARP hỏng hoặc hết băng thông: tạm bỏ nó, người gọi thử lại đường khác
                 _quarantine(chosen, f"lỗi kết nối ({type(exc).__name__})")
             elif _is_arxiv(request.url):
-                ARXIV_EXPORT.failed(request.url, f"no answer ({type(exc).__name__})")
+                ARXIV_EXPORT.failed(request.url, f"no answer ({type(exc).__name__})", route=route)
             raise
 
 
