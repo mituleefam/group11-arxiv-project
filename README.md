@@ -16,6 +16,7 @@ src/
 ├── rate_limiter.py  shared arXiv limiters: API 3 s apart on one connection, downloads in bursts
 ├── chunked_crawl.py whole ranges in steps on Colab, every step saved to Drive (group benchmark)
 ├── snapshot.py      incremental .tar.gz backups of a data folder, and their restore
+├── assigned_ids.py  every ID of an assigned range, for validate.py --assigned-ids
 ├── common.py        data layout, status codes, manifest, CSV logs
 └── requirements.txt
 environment.yml      conda environment (installs src/requirements.txt)
@@ -350,12 +351,15 @@ python src/validate.py --data-dir DATA_DIR \
   --expected-count 5000 --finished --progress-every 100
 ```
 
-`5000` is an illustrative **per-member range size**, not a hard-coded requirement. Checking a count cannot establish that the IDs match the official assignment. For that, have the group supply `official_ids.txt` with one valid arXiv ID per line, and instead run:
+`5000` is an illustrative **per-member range size**, not a hard-coded requirement. Checking a count cannot establish that the IDs match the official assignment. For that, list every ID of the range in `official_ids.txt` and instead run:
 
 ```bash
+python src/assigned_ids.py --start 2605.12338 --end 2605.17337 --out official_ids.txt
 python src/validate.py --data-dir DATA_DIR \
   --assigned-ids official_ids.txt --finished --progress-every 100
 ```
+
+A range over several months needs the last ID of every month but the last one, which the assignment does not give. `assigned_ids.py` then takes it from arXiv's metadata on Kaggle (`--download`, or `--snapshot FILE` for a copy on disk), not from the crawl itself, so an ID that discovery left out is reported as `assigned_id_missing`.
 
 Report: `DATA_DIR/logs/validation_report.csv`, columns `arxiv_id,version,check_name,status,error_message`.
 

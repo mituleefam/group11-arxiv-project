@@ -10,14 +10,24 @@ nothing in the data folders.
 Usage (each argument is a member's --data-dir, optionally named NAME=PATH):
 
     python src/export_report_data.py \
-        m1=/content/drive/MyDrive/group11-data/02_trial/AQuan_2605-12338_2605-17337 \
+        m1=/content/g11/AQuan_2605-12338_2605-17337 \
         m2=... m3=... m4=... m5=... \
+        --one-machine --assigned-ids m1=<backup>/ds_id.txt m2=... \
+        --paper-timings /content/g11/paper_timing/paper_timings.csv \
         --out ../mst1-book/data/m1
 
+--one-machine: the ranges were crawled one after the other on one runtime
+(chunked_crawl.py); the group's disk peak then adds up the folders kept on
+its disk (group_benchmark.py --one-machine). --assigned-ids: each member's
+list of assigned IDs (assigned_ids.py), so the statistics count the IDs
+missing from the data. --paper-timings: per_paper_benchmark.py's samples.
+
 Outputs in --out:
-    meta.json               export time, code commit, members, warnings
+    meta.json               export time, code commit, members, how the ranges were run, warnings
     members.csv             group_benchmark.py's row per member, then "group"
-    statistics.csv          corpus_statistics.py's metrics, one block per member
+    statistics.csv          corpus_statistics.py's metrics, one block per member, then a
+                            "group" block computed over every member's papers together
+    paper_timings.csv       per_paper_benchmark.py's samples (only with --paper-timings)
     papers.csv.gz           one row per assigned ID: discovery, metadata, references
     versions.csv.gz         one row per expected version: final state from versions.json
     run_log.csv             every stage of every run (logs/run_log.csv)
@@ -45,8 +55,8 @@ from pathlib import Path
 from benchmark_runs import aggregate
 from common import DataLayout, folder_name, now_iso
 from corpus_statistics import analyze
-from group_benchmark import COLUMNS, group_row, member_row
-from validate import load_manifest
+from group_benchmark import COLUMNS, group_row, member_row, one_machine_disk_peak
+from validate import load_manifest, read_ids_file
 
 PAPER_FIELDS = ["member", "arxiv_id", "discovery_status", "n_versions", "has_metadata",
                 "primary_category", "submission_date", "n_revisions", "has_venue",
@@ -58,6 +68,9 @@ VERSION_FIELDS = ["member", "arxiv_id", "version", "status", "source_format", "d
                   "bib_files", "attempts", "total_seconds"]
 SAMPLE_FIELDS = ["member", "run_id", "elapsed_seconds", "rss_tree_bytes", "process_count",
                  "data_dir_bytes", "colab_disk_used_bytes"]
+# per_paper_benchmark.py's columns, without the local path of each summary
+PAPER_TIMING_FIELDS = ["arxiv_id", "wall_seconds", "benchmark_return_code", "status",
+                       "source_complete", "reference_complete", "run_id", "completed_utc"]
 
 
 def read_json(path: Path):
@@ -168,6 +181,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--out", type=Path, required=True, help="e.g. ../mst1-book/data/m1")
     parser.add_argument("--max-samples", type=int, default=2000, help="samples kept per benchmark run")
     parser.add_argument("--max-issues", type=int, default=500, help="non-PASS rows kept per member")
+    parser.add_argument("--one-machine", action="store_true",
+                        help="the ranges were crawled one after the other on one runtime")
+    parser.add_argument("--assigned-ids", nargs="+", default=[], metavar="NAME=FILE",
+                        help="a member's list of assigned IDs (assigned_ids.py), one per member")
+    parser.add_argument("--paper-timings", type=Path,
+                        help="paper_timings.csv of per_paper_benchmark.py")
     args = parser.parse_args(argv)
     args.members = []
     for item in args.folders:
@@ -176,6 +195,15 @@ def parse_args(argv=None) -> argparse.Namespace:
         if not (root / "work").is_dir():
             parser.error(f"{root} has no work/ folder: is it a --data-dir?")
         args.members.append((name or root.name, root))
+    names = {name for name, _ in args.members}
+    args.ids = {}
+    for item in args.assigned_ids:
+        name, _, path = item.partition("=")
+        if name not in names or not path:
+            parser.error(f"--assigned-ids {item}: expected NAME=FILE with NAME one of {sorted(names)}")
+        args.ids[name] = read_ids_file(Path(path))
+    if args.paper_timings and not args.paper_timings.is_file():
+        parser.error(f"--paper-timings {args.paper_timings} does not exist")
     return args
 
 
@@ -192,7 +220,7 @@ def main(argv=None) -> int:
         row = member_row(name, root, warnings)
         row["data_dir"] = root.name  # the folder name only: no personal Drive path in the book
         members.append(row)
-        stats += [{"member": name, **m} for m in analyze(root)]
+        stats += [{"member": name, **m} for m in analyze(root, assigned_ids=args.ids.get(name))]
         papers += paper_rows(name, layout)
         versions += version_rows(name, layout)
         stages += [{"member": name, **r} for r in read_csv(layout.logs / "run_log.csv")]
@@ -206,7 +234,13 @@ def main(argv=None) -> int:
             val_counts[(name, r.get("check_name"), r.get("status"))] += 1
         val_issues += [{"member": name, **r} for r in report if r.get("status") != "PASS"][:args.max_issues]
 
-    members.append(group_row(members))
+    every_id = set().union(*args.ids.values()) if len(args.ids) == len(args.members) else None
+    if args.ids and every_id is None:
+        warnings.append("--assigned-ids not given for every member: the group block has no assigned-ID counts")
+    stats += [{"member": "group", **m} for m in analyze([root for _, root in args.members],
+                                                        assigned_ids=every_id,
+                                                        paper_timings=args.paper_timings)]
+    members.append(group_row(members, one_machine_disk_peak(args.members) if args.one_machine else None))
     write_csv(args.out / "members.csv", COLUMNS, members)
     write_csv(args.out / "statistics.csv", ["member", "metric", "value", "unit", "description"], stats)
     write_csv(args.out / "papers.csv.gz", PAPER_FIELDS, papers)
@@ -223,8 +257,12 @@ def main(argv=None) -> int:
                for (m, c, s), n in sorted(val_counts.items())])
     write_csv(args.out / "validation_issues.csv",
               ["member", "arxiv_id", "version", "check_name", "status", "error_message"], val_issues)
+    if args.paper_timings:
+        write_csv(args.out / "paper_timings.csv", PAPER_TIMING_FIELDS, read_csv(args.paper_timings))
     meta = {"generated_at": now_iso(), "code_commit": git_commit(),
-            "members": [name for name, _ in args.members], "warnings": warnings}
+            "members": [name for name, _ in args.members],
+            "one_machine": args.one_machine, "assigned_ids": every_id is not None,
+            "paper_timings": args.paper_timings is not None, "warnings": warnings}
     (args.out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"Wrote {len(papers)} papers, {len(versions)} versions, {len(runs)} benchmark runs to {args.out}")

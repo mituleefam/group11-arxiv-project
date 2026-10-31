@@ -53,6 +53,14 @@ ranges are crawled one at a time (arXiv's rate limits "apply to all of the
 machines under your control as a whole"), so the group's wall_seconds, the
 sum, is how long the crawl of the group's data took; the JSON also gives
 wall_seconds_longest_member, the longest single range.
+
+--one-machine: the ranges were crawled one after the other on one runtime
+(chunked_crawl.py), whose disk keeps the folders of the ranges already done.
+The group's data_dir_peak_bytes is then the most the folders held together:
+for each benchmark.py invocation, its own peak plus the size every other
+folder had at its start (the final size of that folder's latest invocation
+ended before it). Without the flag every member ran on a machine of their own
+and the group keeps the highest member peak.
 """
 
 from __future__ import annotations
@@ -62,6 +70,7 @@ import csv
 import json
 import sys
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 from benchmark_runs import aggregate
@@ -196,7 +205,41 @@ def member_row(name: str, root: Path, warnings: list[str]) -> dict:
     return tidy(row)
 
 
-def group_row(members: list[dict]) -> dict:
+def utc(value) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def one_machine_disk_peak(folders: list[tuple[str, Path]]) -> float | None:
+    """Most bytes the data folders held together when their ranges were
+    crawled one after the other on one machine (see --one-machine)."""
+    runs = []
+    for name, root in folders:
+        for run in aggregate(DataLayout(root).logs)[0]:
+            start, end = utc(run["started_utc"]), utc(run["ended_utc"])
+            if start and end:
+                runs.append((name, start, end, run))
+    peak = None
+    for name, start, _, run in runs:
+        own = run["data_dir_sampled_peak_bytes"]
+        if not isinstance(own, (int, float)):
+            continue
+        others = {}  # folder -> (end of its latest invocation before this one, final size)
+        for other, other_start, other_end, other_run in runs:
+            final = other_run["data_dir_final_bytes"]
+            if (other != name and other_end <= start and isinstance(final, (int, float))
+                    and other_end >= others.get(other, (other_end, 0))[0]):
+                others[other] = (other_end, final)
+        total = own + sum(final for _, final in others.values())
+        peak = total if peak is None else max(peak, total)
+    return peak
+
+
+def group_row(members: list[dict], disk_peak: float | None = None) -> dict:
+    """The group's row; `disk_peak` replaces the highest member disk peak
+    (one_machine_disk_peak() when the ranges shared one machine)."""
     group: dict = {"member": "group", "data_dir": ""}
     ids = [m[k] for m in members for k in ("first_id", "last_id") if m[k]]
     group["first_id"] = min(ids, key=id_key) if ids else ""
@@ -207,6 +250,8 @@ def group_row(members: list[dict]) -> dict:
     weighted = [(m["ram_mean_bytes"], m["ram_samples"]) for m in members if m["ram_mean_bytes"]]
     samples = sum(n for _, n in weighted)
     group["ram_mean_bytes"] = sum(v * n for v, n in weighted) / samples if samples else None
+    if disk_peak is not None:
+        group["data_dir_peak_bytes"] = disk_peak
     if any(m["wall_seconds"] is None for m in members):
         group["wall_seconds"] = None  # unknown: compare every member on main.py's clock instead
     group["seconds_per_paper"] = run_seconds(group) / group["papers"] if group["papers"] else None
@@ -219,6 +264,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="a member's --data-dir, e.g. m1=/content/drive/MyDrive/g11/m1")
     parser.add_argument("--out", type=Path, default=Path("group_benchmark"),
                         help="output folder (default: group_benchmark)")
+    parser.add_argument("--one-machine", action="store_true",
+                        help="the ranges were crawled one after the other on one runtime: "
+                             "the group's disk peak adds up the folders kept on its disk")
     args = parser.parse_args(argv)
     args.members = []
     for item in args.folders:
@@ -238,7 +286,7 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     warnings: list[str] = []
     members = [member_row(name, root, warnings) for name, root in args.members]
-    group = group_row(members)
+    group = group_row(members, one_machine_disk_peak(args.members) if args.one_machine else None)
     rows = members + [group]
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -250,12 +298,16 @@ def main(argv=None) -> int:
     longest = max(m[clock] for m in members)
     report = {
         "generated_at": now_iso(), "members": members, "group": group,
-        "wall_seconds_longest_member": longest, "clock": clock,
+        "wall_seconds_longest_member": longest, "clock": clock, "one_machine": args.one_machine,
         "definitions": {
             "wall_seconds": "group: the sum of every member's benchmark.py invocations, i.e. "
                             "the crawl of the group's data with one crawler at a time (empty "
                             "when a member has none)",
             "wall_seconds_longest_member": "the longest single range",
+            "data_dir_peak_bytes": ("group: the most the data folders held together on the one "
+                                    "machine that crawled them one after the other"
+                                    if args.one_machine else
+                                    "group: the highest member peak (one machine per member)"),
             "arxiv_floor_seconds": f"arxiv_api_requests x {ARXIV.mean_interval:g} s + "
                                    f"arxiv_download_requests x {ARXIV_EXPORT.mean_interval:g} s: "
                                    f"the time the requests that were sent need at the pace arXiv "
