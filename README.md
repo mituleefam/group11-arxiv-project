@@ -433,3 +433,19 @@ Choose only a benchmark summary matching the experiment being described; do not 
 5. **Report owner:** generate tables/figures **during Jupyter Book build** in the separate report repository, showing denominators, sample sizes, environment, Git commit, run IDs, interruptions, unresolved exceptions and distinct wall/RAM/disk measures.
 
 **Delivery:** commit source code and documented commands to this repository, and publish the separate Jupyter Book report. Keep the crawled dataset and large logs off the source GitHub repository. The README explains how to reproduce the code; it is not a claim that all source 404 / S2 429 cases were fixed.
+
+### 7.9. Exporting the report data (`export_report_data.py`)
+
+The Jupyter Book is built by GitHub Actions, which cannot read the members' data folders. After every member has
+finished crawling and has run `validate.py --finished` on their own folder (the statistics are recomputed by the export), run once
+(for example on Colab with Google Drive mounted):
+
+```bash
+python src/export_report_data.py \
+  m1=DATA_DIR_M1 m2=DATA_DIR_M2 m3=DATA_DIR_M3 m4=DATA_DIR_M4 m5=DATA_DIR_M5 \
+  --out PATH_TO_BOOK_REPO/data/m1
+```
+
+It writes small aggregated tables (counts, sizes, statuses, timings, RAM/disk samples; no LaTeX text and no
+reference titles) that the book's notebooks read at build time. It sends no request and changes nothing in the
+data folders. Commit the resulting `data/m1/` folder to the book repository, not to this one.
