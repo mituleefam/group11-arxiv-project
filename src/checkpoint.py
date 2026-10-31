@@ -25,8 +25,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from common import NOT_FOUND, PDF_ONLY, SUCCESS, atomic_write_json, now_iso
+from common import NOT_FOUND, PDF_ONLY, SUCCESS, Manifest, atomic_write_json, now_iso
 from extractor import NO_TEX
+
+PARSE_MANIFEST_FILE = "parse_manifest.jsonl"
 
 VERSIONS_FILE = "versions.json"
 
@@ -96,4 +98,18 @@ class VersionStore:
         atomic_write_json(self.path, self.data)
 
 
-__all__ = ["VERSIONS_FILE", "FINAL_STATUSES", "VersionStore"]
+class ParseManifest(Manifest):
+    """Milestone 2: logs/parse_manifest.jsonl, the parse state of every paper
+    (one line per parsed paper, written after its parsed/ files, so after a
+    crash the file never claims a paper that is not on disk)."""
+
+    def __init__(self, logs_dir: Path):
+        super().__init__(Path(logs_dir) / PARSE_MANIFEST_FILE)
+
+    def is_done(self, record: dict | None, code: str, *, keep: bool = False) -> bool:
+        """A run skips a paper parsed by the same code `code` (with `keep`, by
+        any code); a failed or missing paper is parsed again."""
+        return bool(record) and record.get("status") == "done" and (keep or record.get("code") == code)
+
+
+__all__ = ["VERSIONS_FILE", "FINAL_STATUSES", "PARSE_MANIFEST_FILE", "VersionStore", "ParseManifest"]
