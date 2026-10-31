@@ -34,6 +34,13 @@ heartbeat (group_benchmark.py lists such runs). They are copied into
 <data_dir>/logs, where benchmark_runs.py and group_benchmark.py read them.
 The steps done are recorded in <data_dir>/work/chunk_journal.jsonl, which the
 archives carry, so a restored folder knows which steps its files hold.
+
+The journal also names each try's benchmark.py run, and only the runs it
+names have their measurements copied: a runtime that dies after a step ended
+but before its archive reached Drive loses that step's files, and the step
+is done again, so its first run must not count twice. Its summary stays in
+<backup_dir>/perf for the record, and its heartbeat makes group_benchmark.py
+list it among the runs not counted.
 Saving and restoring archives is outside the measured crawl time; it is
 logged in <backup_dir>/snapshot_log.csv.
 
@@ -58,6 +65,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -153,13 +161,24 @@ def save(run: Run, step: str) -> None:
         log_snapshot(run, step, "save", path.name, seconds, size)
 
 
+PERF_FILE = re.compile(r"^performance_(summary|samples|progress)_(.+)\.(json|csv)$")
+
+
 def copy_perf(run: Run) -> None:
-    """Copy benchmark.py's files from <backup_dir>/perf into <data_dir>/logs."""
+    """Copy benchmark.py's files from <backup_dir>/perf into <data_dir>/logs:
+    the heartbeats of every run, the summaries and samples of the runs the
+    journal names (see the module docstring)."""
     if not run.backup_dir or not run.perf.is_dir():
         return
     logs = DataLayout(run.data_dir).logs
     logs.mkdir(parents=True, exist_ok=True)
+    records = read_journal(run)
+    kept = {r["run_id"] for r in records if r.get("run_id")}
+    named = any("run_id" in r for r in records)  # journals older than run_id: copy everything
     for path in run.perf.glob("performance_*"):
+        match = PERF_FILE.match(path.name)
+        if named and match and match[1] != "progress" and match[2] not in kept:
+            continue
         target = logs / path.name
         if not target.exists() or target.stat().st_size != path.stat().st_size:
             shutil.copy2(path, target)
@@ -178,21 +197,28 @@ def restore(run: Run) -> None:
     copy_perf(run)
 
 
-def launch(run: Run, script: str, args: list[str]) -> int:
-    """Run src/<script> under benchmark.py; returns its exit code."""
+def launch(run: Run, script: str, args: list[str]) -> tuple[int, str, bool]:
+    """Run src/<script> under benchmark.py: (exit code, benchmark.py run_id or
+    "", whether the user stopped it)."""
     run.perf.mkdir(parents=True, exist_ok=True)
+    before = set(run.perf.glob("performance_progress_*.json"))
     command = [sys.executable, str(SRC / "benchmark.py"), "--data-dir", str(run.data_dir),
                "--output-dir", str(run.perf), "--interval", "2", "--disk-interval", "300",
                "--heartbeat-seconds", "60", "--", sys.executable, str(SRC / script), *args]
     process = subprocess.Popen(command)
+    stopped = False
     try:
-        return process.wait()
+        code = process.wait()
     except KeyboardInterrupt:
+        stopped = True
         try:
-            process.wait(timeout=120)  # Stop reached the step too: let it write its summary
+            code = process.wait(timeout=120)  # Stop reached the step too: let it write its summary
         except (KeyboardInterrupt, subprocess.TimeoutExpired):
             process.kill()
-        raise
+            code = process.wait()
+    new = sorted(set(run.perf.glob("performance_progress_*.json")) - before)
+    run_id = PERF_FILE.match(new[-1].name)[2] if new else ""
+    return code, run_id, stopped
 
 
 def run_step(run: Run, step: str, script: str, args: list[str], *, optional: bool = False) -> None:
@@ -201,15 +227,15 @@ def run_step(run: Run, step: str, script: str, args: list[str], *, optional: boo
     for attempt in range(1, 10):
         print(f"\n[{run.name}] {step}", flush=True)
         started, clock = now_iso(), time.perf_counter()
-        code = launch(run, script, args)
+        code, run_id, stopped = launch(run, script, args)
         journal(run, {"step": step, "rc": code, "started": started, "ended": now_iso(),
-                      "seconds": round(time.perf_counter() - clock, 1)})
+                      "seconds": round(time.perf_counter() - clock, 1), "run_id": run_id})
         copy_perf(run)
         save(run, step)
+        if stopped or code == 130:
+            raise KeyboardInterrupt
         if code == 0:
             return
-        if code == 130:
-            raise KeyboardInterrupt
         if optional:
             print(f"[{run.name}] {step}: exit code {code}, going on without it", flush=True)
             return
