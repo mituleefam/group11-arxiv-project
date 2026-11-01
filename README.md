@@ -16,6 +16,7 @@ src/
 ├── rate_limiter.py  shared arXiv limiters: API 3 s apart on one connection, downloads in bursts
 ├── chunked_crawl.py whole ranges in steps on Colab, every step saved to Drive (group benchmark)
 ├── snapshot.py      incremental .tar.gz backups of a data folder, and their restore
+├── assigned_ids.py  every ID of an assigned range, for validate.py --assigned-ids
 ├── common.py        data layout, status codes, manifest, CSV logs
 └── requirements.txt
 environment.yml      conda environment (installs src/requirements.txt)
@@ -41,6 +42,7 @@ pip install -r src/requirements.txt
 ```
 
 On Google Colab only the install line is needed:
+
 ```python
 !git clone https://github.com/mituleefam/group11-arxiv-project.git
 %cd group11-arxiv-project
@@ -91,15 +93,15 @@ python src/main.py --start 2604.05535 --end 2604.10534 --data-dir data --limit 1
 python src/main.py --start 2604.05535 --end 2604.10534 --data-dir data --stages discovery,metadata
 ```
 
-| Argument | Default | Meaning |
-|---|---|---|
-| `--range START_MONTH START_ID END_MONTH END_ID` | — | The range as in the registration sheet, e.g. `2026-04 05535 2026-04 10534`. May span several months. |
-| `--start ID` / `--end ID` | — | The same range as two IDs (`2604.05535` or `2026-04:05535`). Use either `--range` or `--start`/`--end`. |
-| `--data-dir DIR` | `data` | Root folder of the corpus, working files and logs. Keep it outside the repository (e.g. on Google Drive); `data/` is git-ignored. |
-| `--stages LIST` | all | Comma-separated subset of `discovery,metadata,download,references`. |
-| `--limit N` | none | Trial run: only the first N IDs of the range. |
-| `--batch-size N` | `100` | arXiv IDs per API call in discovery and metadata. |
-| `--user-agent TEXT` | `NMKHDL-arxiv-crawler/1.0 (university course project)` | User-Agent header sent to arXiv. |
+| Argument                                        | Default                                                | Meaning                                                                                                                           |
+| ----------------------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `--range START_MONTH START_ID END_MONTH END_ID` | —                                                      | The range as in the registration sheet, e.g. `2026-04 05535 2026-04 10534`. May span several months.                              |
+| `--start ID` / `--end ID`                       | —                                                      | The same range as two IDs (`2604.05535` or `2026-04:05535`). Use either `--range` or `--start`/`--end`.                           |
+| `--data-dir DIR`                                | `data`                                                 | Root folder of the corpus, working files and logs. Keep it outside the repository (e.g. on Google Drive); `data/` is git-ignored. |
+| `--stages LIST`                                 | all                                                    | Comma-separated subset of `discovery,metadata,download,references`.                                                               |
+| `--limit N`                                     | none                                                   | Trial run: only the first N IDs of the range.                                                                                     |
+| `--batch-size N`                                | `100`                                                  | arXiv IDs per API call in discovery and metadata.                                                                                 |
+| `--user-agent TEXT`                             | `NMKHDL-arxiv-crawler/1.0 (university course project)` | User-Agent header sent to arXiv.                                                                                                  |
 
 **Interruptions.** Re-running the same command is safe and continues where it
 stopped: finished IDs, versions and papers are skipped and never overwritten;
@@ -107,7 +109,9 @@ failed ones are tried again. `main.py` exits only when every selected stage has
 finished, so after `[download] finished` it may still be waiting for the
 references stage.
 
-**The group's ranges on Colab (benchmark).** The Colab notebook runs
+**The group's ranges on Colab (benchmark).** The Colab notebook
+`src/chay-crawler-nhom-final.ipynb` (the official run; `src/chay-thu-crawler-nhom.ipynb`
+runs the same steps on a short trial range, in a separate Drive folder) runs
 `python src/chunked_crawl.py plan.json`: the ranges are crawled one after the
 other, on the runtime's own disk (Google Drive is too slow for the crawler's
 many small files), in steps of 1000 papers, each step under `benchmark.py`.
@@ -122,30 +126,30 @@ batch) are left to a sweep of the whole range at the end. See the docstring of
 The discovery stage must have run once (it writes `work/paper_manifest.jsonl`,
 which the other stages read).
 
-| Stage | Command |
-|---|---|
-| Discovery | `python src/main.py --start 2604.05535 --end 2604.10534 --data-dir data --stages discovery` |
-| Metadata | `python src/main.py --start 2604.05535 --end 2604.10534 --data-dir data --stages metadata` |
-| Source download | `python src/downloader.py --data-dir data` |
-| References | `python src/references.py --data-dir data` |
+| Stage           | Command                                                                                     |
+| --------------- | ------------------------------------------------------------------------------------------- |
+| Discovery       | `python src/main.py --start 2604.05535 --end 2604.10534 --data-dir data --stages discovery` |
+| Metadata        | `python src/main.py --start 2604.05535 --end 2604.10534 --data-dir data --stages metadata`  |
+| Source download | `python src/downloader.py --data-dir data`                                                  |
+| References      | `python src/references.py --data-dir data`                                                  |
 
 `downloader.py` options:
 
-| Argument | Meaning |
-|---|---|
-| `--data-dir DIR` | Same folder as `main.py --data-dir`. |
+| Argument            | Meaning                                                                    |
+| ------------------- | -------------------------------------------------------------------------- |
+| `--data-dir DIR`    | Same folder as `main.py --data-dir`.                                       |
 | `--ids ID [ID ...]` | Only these papers (they must be in the manifest), e.g. `--ids 2604.05700`. |
-| `--limit N` | Only the first N papers. |
+| `--limit N`         | Only the first N papers.                                                   |
 
 `references.py` options:
 
-| Argument | Meaning |
-|---|---|
-| `--data-dir DIR` | Same folder as `main.py --data-dir`. |
-| `--ids ID [ID ...]` | Only these papers (no manifest needed). |
-| `--limit N` | Only the first N papers. |
-| `--retry STATUSES` | Crawl again papers that ended with these final statuses, e.g. `not_found,unavailable`. |
-| `--no-arxiv-dates` | Skip the arXiv calls that fill `ref_submission_date` (filled on a later run). |
+| Argument            | Meaning                                                                                |
+| ------------------- | -------------------------------------------------------------------------------------- |
+| `--data-dir DIR`    | Same folder as `main.py --data-dir`.                                                   |
+| `--ids ID [ID ...]` | Only these papers (no manifest needed).                                                |
+| `--limit N`         | Only the first N papers.                                                               |
+| `--retry STATUSES`  | Crawl again papers that ended with these final statuses, e.g. `not_found,unavailable`. |
+| `--no-arxiv-dates`  | Skip the arXiv calls that fill `ref_submission_date` (filled on a later run).          |
 
 ## 4. Output
 
@@ -171,45 +175,45 @@ lost if a run stops). Times are UTC ISO 8601, durations in seconds, sizes in byt
 
 ### `run_log.csv` — one row per stage and run
 
-| Column | Meaning |
-|---|---|
-| `run_id` | Start time of the run (groups the stages of one command). |
-| `stage` | `discovery`, `metadata`, `download` or `references`. |
-| `started_at`, `finished_at` | Wall-clock start and end of the stage. |
-| `seconds` | Duration of the stage. |
-| `items` | IDs resolved (discovery), metadata files written (metadata) or papers given to the stage. |
-| `note` | Warning or error, e.g. papers left incomplete. |
+| Column                      | Meaning                                                                                   |
+| --------------------------- | ----------------------------------------------------------------------------------------- |
+| `run_id`                    | Start time of the run (groups the stages of one command).                                 |
+| `stage`                     | `discovery`, `metadata`, `download` or `references`.                                      |
+| `started_at`, `finished_at` | Wall-clock start and end of the stage.                                                    |
+| `seconds`                   | Duration of the stage.                                                                    |
+| `items`                     | IDs resolved (discovery), metadata files written (metadata) or papers given to the stage. |
+| `note`                      | Warning or error, e.g. papers left incomplete.                                            |
 
 ### `arxiv_api_log.csv` — one row per arXiv API call
 
-| Column | Meaning |
-|---|---|
-| `time` | When the call finished. |
-| `stage` | `discovery`, `metadata` or `ref_dates` (submission dates of cited papers). |
-| `first_id`, `last_id` | First and last ID of the batch. |
-| `requested`, `returned` | IDs asked and entries received. |
-| `attempts` | HTTP attempts (retries included). |
-| `seconds` | Duration of the call, waits included. |
-| `error` | Empty on success. |
+| Column                  | Meaning                                                                    |
+| ----------------------- | -------------------------------------------------------------------------- |
+| `time`                  | When the call finished.                                                    |
+| `stage`                 | `discovery`, `metadata` or `ref_dates` (submission dates of cited papers). |
+| `first_id`, `last_id`   | First and last ID of the batch.                                            |
+| `requested`, `returned` | IDs asked and entries received.                                            |
+| `attempts`              | HTTP attempts (retries included).                                          |
+| `seconds`               | Duration of the call, waits included.                                      |
+| `error`                 | Empty on success.                                                          |
 
 ### `download_log.csv` — one row per processed version
 
-| Column | Meaning |
-|---|---|
-| `time` | When the version was finished. |
-| `arxiv_id`, `version` | e.g. `2604.05535`, `v1`. |
-| `status` | `success`, `pdf_only`, `no_tex`, `not_found` (HTTP 404) or `failed` (retried on the next run). |
-| `source_format` | Detected format: `tar.gz`, `tar`, `gzip-tex`, `plain-tex`, `pdf`, `docx`, `postscript`, `zip`... |
-| `http_status` | Last HTTP status received. |
-| `attempts` | HTTP requests made (retries and resumed downloads included). |
-| `download_seconds`, `extract_seconds`, `total_seconds` | Time spent downloading, extracting, and in total. |
-| `downloaded_bytes` | Size of the file received from arXiv (compressed). |
-| `original_bytes` | Total **uncompressed** size of every file in the source. |
-| `image_bytes` | Part of `original_bytes` that are figure files. |
-| `kept_bytes` | Total size of the kept `.tex`/`.bib` files (uncompressed, same basis as `original_bytes`). |
-| `kept_files`, `tex_files`, `bib_files` | Number of kept files, of which `.tex` and `.bib`. |
-| `skipped_files` | `.tex`/`.bib` members not written (unsafe path, link, name refused by the file system); details in `versions.json`. |
-| `error` | Empty on success. |
+| Column                                                 | Meaning                                                                                                             |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `time`                                                 | When the version was finished.                                                                                      |
+| `arxiv_id`, `version`                                  | e.g. `2604.05535`, `v1`.                                                                                            |
+| `status`                                               | `success`, `pdf_only`, `no_tex`, `not_found` (HTTP 404) or `failed` (retried on the next run).                      |
+| `source_format`                                        | Detected format: `tar.gz`, `tar`, `gzip-tex`, `plain-tex`, `pdf`, `docx`, `postscript`, `zip`...                    |
+| `http_status`                                          | Last HTTP status received.                                                                                          |
+| `attempts`                                             | HTTP requests made (retries and resumed downloads included).                                                        |
+| `download_seconds`, `extract_seconds`, `total_seconds` | Time spent downloading, extracting, and in total.                                                                   |
+| `downloaded_bytes`                                     | Size of the file received from arXiv (compressed).                                                                  |
+| `original_bytes`                                       | Total **uncompressed** size of every file in the source.                                                            |
+| `image_bytes`                                          | Part of `original_bytes` that are figure files.                                                                     |
+| `kept_bytes`                                           | Total size of the kept `.tex`/`.bib` files (uncompressed, same basis as `original_bytes`).                          |
+| `kept_files`, `tex_files`, `bib_files`                 | Number of kept files, of which `.tex` and `.bib`.                                                                   |
+| `skipped_files`                                        | `.tex`/`.bib` members not written (unsafe path, link, name refused by the file system); details in `versions.json`. |
+| `error`                                                | Empty on success.                                                                                                   |
 
 Size reduction from removing figures: `1 - kept_bytes / original_bytes`.
 
@@ -244,13 +248,17 @@ Size reduction from removing figures: `1 - kept_bytes / original_bytes`.
   for harvesting `export.arxiv.org`, "bursts at 4 requests per second with a
   1 second sleep, per burst". `rate_limiter.ARXIV_EXPORT` starts at most 4
   requests 0.25 s apart, then none for 1 s (2 per second on average), with up
-  to 4 downloads open at once, and `downloader.py` works on 4 papers at a
-  time. The API calls count in this pace too, and every HTTP 429 pauses all
-  arXiv requests, except one for a source file that already failed: such a
+  to 6 downloads open at once (a source file often takes several seconds to
+  arrive), and `downloader.py` works on 6 papers at a time. The API calls
+  count in this pace too, and every HTTP 429 pauses all arXiv requests, except
+  one for a source file that already failed: such a
   file has a problem of its own (arXiv can fail to serve one source for
   hours), so its refusals pause nothing, and after two failures (one, if it
   failed in an earlier pass) it is put aside for a later pass; papers that
-  failed before are downloaded last. Sources are fetched from
+  failed before are downloaded last. With WARP or proxies on, a refusal that would pause every
+  request pauses only the route it came through while another route is free:
+  only that route pauses (15 s, doubled at each new refusal, up to 5 minutes),
+  and the other routes go on at the same shared pace. Sources are fetched from
   `export.arxiv.org`, never from `arxiv.org`.
 - **Semantic Scholar:** 1 request per second with an API key, one every 3.1 s
   without (100 requests per 5 minutes). The references of many papers come in
@@ -262,21 +270,20 @@ Size reduction from removing figures: `1 - kept_bytes / original_bytes`.
   server's `Retry-After`), up to 12 times; 5xx and network errors after 5, 10,
   20, 40 and 80 s.
 
-  
 ## 7. Data Validation, Statistics, and Benchmarking (Role 4)
 
 Role 4 **audits and measures** the Milestone 1 crawler. These scripts do not modify or repair paper source files or silently change the outcomes of arXiv/Semantic Scholar requests. Run them from the repository root. **Keep raw data, logs, API keys, Google Drive credentials, and `.env` files out of GitHub.**
 
 ### 7.1. Role 4 source files and responsibilities
 
-| File | Function | Writes to the data directory? | Requires network/API key? |
-| --- | --- | --- | --- |
-| `src/validate.py` | Audit manifest, official IDs, metadata, every version's source files, `kept_files`, reference documents, incomplete arXiv dates, and leftover temporary files. | Yes: `logs/validation_report.csv` (unless `--output` overrides). Does not repair corpus. | No |
-| `src/corpus_statistics.py` | Compute paper/version coverage, source sizes, collection and metadata success rates, reference counts with explicit denominators, Discovery time logged, and optional timing metrics. | Yes: `logs/summary_statistics.csv`. | No |
-| `src/benchmark.py` | Launch and monitor a command; sample process-tree RAM, remote data-directory size, local disk use, end-to-end invocation wall time and progress/heartbeat. | Yes: `performance_*` logs. | Only if the child command uses an API |
-| `src/benchmark_runs.py` | Summarize multiple benchmark invocations and detect heartbeat files with no finished summary. Distinguish new runs from resumed/incomplete runs. | Yes: `benchmark_runs_overview.csv` and `.json`. | No |
-| `src/per_paper_benchmark.py` | Run an independent **fresh full-pipeline** experiment for each selected paper and report its observed elapsed wall time. | Yes: dedicated corpus folders, `paper_timings.csv` and `per_paper_summary.json`. | **Yes**, when actually running arXiv/Semantic Scholar |
-| `src/test_role4.py` | Offline regression tests for the tools and input/output validation contracts. | Temporary test directories only. | No |
+| File                         | Function                                                                                                                                                                              | Writes to the data directory?                                                            | Requires network/API key?                             |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `src/validate.py`            | Audit manifest, official IDs, metadata, every version's source files, `kept_files`, reference documents, incomplete arXiv dates, and leftover temporary files.                        | Yes: `logs/validation_report.csv` (unless `--output` overrides). Does not repair corpus. | No                                                    |
+| `src/corpus_statistics.py`   | Compute paper/version coverage, source sizes, collection and metadata success rates, reference counts with explicit denominators, Discovery time logged, and optional timing metrics. | Yes: `logs/summary_statistics.csv`.                                                      | No                                                    |
+| `src/benchmark.py`           | Launch and monitor a command; sample process-tree RAM, remote data-directory size, local disk use, end-to-end invocation wall time and progress/heartbeat.                            | Yes: `performance_*` logs.                                                               | Only if the child command uses an API                 |
+| `src/benchmark_runs.py`      | Summarize multiple benchmark invocations and detect heartbeat files with no finished summary. Distinguish new runs from resumed/incomplete runs.                                      | Yes: `benchmark_runs_overview.csv` and `.json`.                                          | No                                                    |
+| `src/per_paper_benchmark.py` | Run an independent **fresh full-pipeline** experiment for each selected paper and report its observed elapsed wall time.                                                              | Yes: dedicated corpus folders, `paper_timings.csv` and `per_paper_summary.json`.         | **Yes**, when actually running arXiv/Semantic Scholar |
+| `src/test_role4.py`          | Offline regression tests for the tools and input/output validation contracts.                                                                                                         | Temporary test directories only.                                                         | No                                                    |
 
 **Other owners:** `main.py`, Discovery, Metadata, Download/Extraction/Checkpoint and Semantic Scholar crawling remain owned by their respective members. A Validation warning does not automatically mean Role 4 caused the error.
 
@@ -350,21 +357,38 @@ python src/validate.py --data-dir DATA_DIR \
   --expected-count 5000 --finished --progress-every 100
 ```
 
-`5000` is an illustrative **per-member range size**, not a hard-coded requirement. Checking a count cannot establish that the IDs match the official assignment. For that, have the group supply `official_ids.txt` with one valid arXiv ID per line, and instead run:
+`5000` is an illustrative **per-member range size**, not a hard-coded requirement. Checking a count cannot establish that the IDs match the official assignment. For that, list every ID of the range in `official_ids.txt` and instead run:
 
 ```bash
+python src/assigned_ids.py --start 2605.12338 --end 2605.17337 --out official_ids.txt
 python src/validate.py --data-dir DATA_DIR \
   --assigned-ids official_ids.txt --finished --progress-every 100
 ```
 
+A range over several months needs the last ID of every month but the last one, which the assignment does not give. `assigned_ids.py` then takes it from arXiv's metadata on Kaggle (`--download`, or `--snapshot FILE` for a copy on disk), not from the crawl itself, so an ID that discovery left out is reported as `assigned_id_missing`.
+
 Report: `DATA_DIR/logs/validation_report.csv`, columns `arxiv_id,version,check_name,status,error_message`.
 
-| Check status | Interpretation |
-| --- | --- |
-| `PASS` | The particular check passed. **Not** a guarantee every requirement is met. |
-| `WARN` | Requires an explanation or manual review, e.g. pending cited arXiv dates or a verified 404 exception. |
-| `PENDING` | Missing or incomplete work, e.g. S2 HTTP 429 caused a missing references document. |
-| `FAIL` | Structural/content validation failure (missing files, zero-byte source, inconsistent reference values). |
+| Check status | Interpretation                                                                                                                                                                            |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PASS`       | The particular check passed. **Not** a guarantee every requirement is met.                                                                                                                |
+| `WARN`       | Requires an explanation or manual review, e.g. pending cited arXiv dates or a verified 404 exception.                                                                                     |
+| `PENDING`    | Missing or incomplete work, e.g. S2 HTTP 429 caused a missing references document.                                                                                                        |
+| `FAIL`       | Structural/content validation failure (missing recorded files, mismatched byte counts/source hash, inconsistent reference values). A zero-byte file alone is not automatically a failure. |
+
+**Zero-byte `.tex`/`.bib` policy:** A source file with size 0 bytes may legitimately exist in the original arXiv archive. Validation distinguishes the following:
+
+- `WARN` (`zero_byte_source`): the file exists, but no archive-time SHA-256 is available to verify that the original file was also empty. This is **not** automatically a failed download.
+- `PASS` (`zero_byte_source`): Member 2 recorded the SHA-256 from the **original archive at extraction time**, and it matches the empty file now stored.
+- `FAIL`: the archive-time hash conflicts with the saved file, a file named in `kept_files` is missing, or the sum of saved file sizes disagrees with `kept_bytes`. Missing files are **not** equivalent to zero-byte files.
+
+Member 2 owns archive-side verification and any source repair; Role 4 detects discrepancies and re-runs validation. `WARN` items must remain documented until verified; they should not be silently turned into `PASS`. The operational source handling metric may count structurally valid zero-byte files with warnings, but must not label them **source integrity verified**.
+
+The Statistics output includes:
+
+- `source_versions_with_zero_byte_files`: source versions with one or more zero-byte `.tex`/`.bib` files.
+- `source_versions_with_unverified_zero_byte_files`: those lacking sufficient archive-time hash evidence.
+- `source_versions_with_zero_byte_hash_mismatch`: those with a contradictory archive-time hash (not counted as valid source completion).
 
 Use `--strict` only for an audit gate: it returns a nonzero exit code if any `PENDING` or `FAIL` exists. Do **not** relabel 404 or missing references just to force a green result. `--verified-404 reviewed.csv` requires genuine prior manual verification and does not recover the source. `--verify-hashes` is meaningful only when Member 2 has recorded archive-time SHA-256 hashes; hashing an already-written file alone is not provenance verification.
 
@@ -430,7 +454,7 @@ python src/per_paper_benchmark.py \
   --interval 5 --disk-interval 300
 ```
 
-The command runs an independent, fresh *entire pipeline* per paper. It writes `paper_timings.csv` and `per_paper_summary.json`. `complete` requires valid source, Semantic Scholar data **and** completed cited arXiv dates. An S2 result without completed arXiv dates is marked incomplete, not successful.
+The command runs an independent, fresh _entire pipeline_ per paper. It writes `paper_timings.csv` and `per_paper_summary.json`. `complete` requires valid source, Semantic Scholar data **and** completed cited arXiv dates. An S2 result without completed arXiv dates is marked incomplete, not successful.
 
 This is **not** the observed per-paper latency inside a concurrent 25,000-paper crawl. With a measured sample CSV, optionally add its distribution to the statistics:
 
@@ -451,3 +475,19 @@ Choose only a benchmark summary matching the experiment being described; do not 
 5. **Report owner:** generate tables/figures **during Jupyter Book build** in the separate report repository, showing denominators, sample sizes, environment, Git commit, run IDs, interruptions, unresolved exceptions and distinct wall/RAM/disk measures.
 
 **Delivery:** commit source code and documented commands to this repository, and publish the separate Jupyter Book report. Keep the crawled dataset and large logs off the source GitHub repository. The README explains how to reproduce the code; it is not a claim that all source 404 / S2 429 cases were fixed.
+
+### 7.9. Exporting the report data (`export_report_data.py`)
+
+The Jupyter Book is built by GitHub Actions, which cannot read the members' data folders. After every member has
+finished crawling and has run `validate.py --finished` on their own folder (the statistics are recomputed by the export), run once
+(for example on Colab with Google Drive mounted):
+
+```bash
+python src/export_report_data.py \
+  m1=DATA_DIR_M1 m2=DATA_DIR_M2 m3=DATA_DIR_M3 m4=DATA_DIR_M4 m5=DATA_DIR_M5 \
+  --out PATH_TO_BOOK_REPO/data/m1
+```
+
+It writes small aggregated tables (counts, sizes, statuses, timings, RAM/disk samples; no LaTeX text and no
+reference titles) that the book's notebooks read at build time. It sends no request and changes nothing in the
+data folders. Commit the resulting `data/m1/` folder to the book repository, not to this one.

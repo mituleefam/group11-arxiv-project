@@ -103,11 +103,52 @@ class Role4OfflineTests(unittest.TestCase):
         (self.root / "corpus" / "2511-21709" / "references_all.json").unlink()
         self.assertTrue(any(r["check_name"] == "references" and r["status"] == "PENDING" for r in validate(self.root)))
 
-    def test_empty_tex_detected(self):
-        tex = self.root / "corpus" / "2511-21709" / "v1" / "sections" / "intro.tex"
+    def _set_zero_byte_source(self, expected_hash=None):
+        paper = self.root / "corpus" / "2511-21709"
+        tex = paper / "v1" / "sections" / "intro.tex"
         tex.write_bytes(b"")
-        result = validate(self.root)
-        self.assertTrue(any(r["check_name"] == "zero_byte_source" and r["status"] == "FAIL" for r in result))
+        path = paper / "versions.json"
+        contents = json.loads(path.read_text(encoding="utf-8"))
+        state = contents["versions"]["v1"]
+        state["kept_bytes"] = 0
+        if expected_hash is not None:
+            state["sha256_by_file"] = {"sections/intro.tex": expected_hash}
+        path.write_text(json.dumps(contents), encoding="utf-8")
+
+    def test_zero_byte_without_archive_proof_warns_but_is_operationally_complete(self):
+        self._set_zero_byte_source()
+        issues = validate(self.root)
+        self.assertTrue(any(r["check_name"] == "zero_byte_source" and r["status"] == "WARN" for r in issues))
+        self.assertFalse([r for r in issues if r["status"] == "FAIL"], issues)
+        stats = {r["metric"]: r["value"] for r in analyze(self.root)}
+        self.assertEqual(stats["papers_source_complete"], 1)
+        self.assertEqual(stats["source_versions_with_unverified_zero_byte_files"], 1)
+
+    def test_zero_byte_matching_archive_hash_passes(self):
+        import hashlib
+        self._set_zero_byte_source(hashlib.sha256(b"").hexdigest())
+        issues = validate(self.root)
+        self.assertTrue(any(r["check_name"] == "zero_byte_source" and r["status"] == "PASS" for r in issues))
+        stats = {r["metric"]: r["value"] for r in analyze(self.root)}
+        self.assertEqual(stats["papers_source_complete"], 1)
+        self.assertEqual(stats["source_versions_with_unverified_zero_byte_files"], 0)
+
+    def test_zero_byte_conflicting_archive_hash_fails(self):
+        import hashlib
+        self._set_zero_byte_source(hashlib.sha256(b"actual original contents").hexdigest())
+        issues = validate(self.root)
+        self.assertTrue(any(r["check_name"] == "zero_byte_source" and r["status"] == "FAIL" for r in issues))
+        stats = {r["metric"]: r["value"] for r in analyze(self.root)}
+        self.assertEqual(stats["papers_source_complete"], 0)
+        self.assertEqual(stats["source_versions_with_zero_byte_hash_mismatch"], 1)
+
+    def test_zero_byte_with_wrong_kept_bytes_is_invalid(self):
+        paper = self.root / "corpus" / "2511-21709"
+        (paper / "v1" / "sections" / "intro.tex").write_bytes(b"")
+        issues = validate(self.root)
+        self.assertTrue(any(r["check_name"] == "kept_byte_count" and r["status"] == "FAIL" for r in issues))
+        stats = {r["metric"]: r["value"] for r in analyze(self.root)}
+        self.assertEqual(stats["papers_source_complete"], 0)
 
     def test_missing_assigned_id_detected(self):
         result = validate(self.root, expected_ids={"2511.21709", "2511.21710"})

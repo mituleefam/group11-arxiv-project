@@ -3,6 +3,11 @@
 Usage:
   python src/corpus_statistics.py --data-dir /path/to/data
   python src/corpus_statistics.py --data-dir /path/to/data --benchmark-summary /path/to/summary.json
+  python src/corpus_statistics.py --data-dir /path/m1 /path/m2 /path/m3 --output group_statistics.csv
+
+Several --data-dir folders (one per range of the group) are read as one
+corpus: rates and means are computed over all their papers together, not
+averaged over the folders.
 
 Important: append-only CSV logs contain retries, so this program primarily reads
 manifest/versions.json/references_all.json (the latest saved states), not raw
@@ -14,6 +19,7 @@ import argparse
 import csv
 import json
 from collections import Counter
+import hashlib
 from pathlib import Path, PurePosixPath
 
 from validate import load_manifest, read_ids_file
@@ -34,10 +40,17 @@ def mean(values):
     return sum(values) / len(values)
 
 
-def analyze(root: Path, benchmark_summary: Path | None = None, assigned_ids: set[str] | None = None,
-            paper_timings: Path | None = None):
-    """Return documented metrics as a list of metric/value/unit/description dicts."""
-    manifest, problems = load_manifest(root / "work" / "paper_manifest.jsonl")
+def analyze(root: Path | list[Path], benchmark_summary: Path | None = None,
+            assigned_ids: set[str] | None = None, paper_timings: Path | None = None):
+    """Return documented metrics as a list of metric/value/unit/description dicts.
+    `root` may be a list of data folders, read together as one corpus."""
+    roots = [Path(root)] if isinstance(root, (str, Path)) else [Path(r) for r in root]
+    manifest, problems, home = {}, [], {}
+    for folder in roots:
+        records, folder_problems = load_manifest(folder / "work" / "paper_manifest.jsonl")
+        manifest.update(records)
+        problems += folder_problems
+        home.update(dict.fromkeys(records, folder))
     existing = [r for r in manifest.values() if r.get("status") == "success"]
     discovery = Counter(r.get("status", "unknown") for r in manifest.values())
     download_status = Counter()
@@ -51,10 +64,13 @@ def analyze(root: Path, benchmark_summary: Path | None = None, assigned_ids: set
     n_ref_papers = n_ref_succeeded = n_ref_dates_pending = n_ref_dates_unknown = 0
     source_seconds_per_paper = []
     n_invalid_source_versions = 0
+    n_zero_byte_versions = 0
+    n_zero_byte_unverified_versions = 0
+    n_zero_byte_hash_mismatch_versions = 0
 
     for rec in existing:
         arxiv_id = rec["arxiv_id"]
-        paper = root / "corpus" / arxiv_id.replace(".", "-")
+        paper = home[arxiv_id] / "corpus" / arxiv_id.replace(".", "-")
         m = read_json(paper / "metadata.json")
         metadata_ok = isinstance(m, dict) and m.get("arxiv_id") == arxiv_id
         papers_with_metadata += int(metadata_ok)
@@ -72,7 +88,8 @@ def analyze(root: Path, benchmark_summary: Path | None = None, assigned_ids: set
             status = v.get("status", "missing")
             download_status[status] += 1
             folder_exists = (paper / version).is_dir()
-            # A success record with missing or empty kept files is not truly complete.
+            # A successful extraction may legitimately contain a zero-byte file.
+            # An absent file or incorrect recorded byte count is not acceptable.
             valid_files = True
             if status == "success" and folder_exists:
                 names = v.get("kept_files")
@@ -91,9 +108,24 @@ def analyze(root: Path, benchmark_summary: Path | None = None, assigned_ids: set
                             actual = {p.relative_to(paper / version).as_posix()
                                       for p in (paper / version).rglob("*") if p.is_file() and not p.is_symlink()}
                             valid_files = (actual == set(names) and all(f.is_file() and not f.is_symlink()
-                                           and f.stat().st_size > 0 for f in kept)
+                                           for f in kept)
                                            and isinstance(v.get("kept_bytes"), int)
                                            and sum(f.stat().st_size for f in kept) == v["kept_bytes"])
+                            if valid_files:
+                                zero_names = [name for name, file in zip(names, kept)
+                                              if file.stat().st_size == 0]
+                                if zero_names:
+                                    n_zero_byte_versions += 1
+                                    hashes = v.get("sha256_by_file")
+                                    hashes = hashes if isinstance(hashes, dict) else {}
+                                    empty_digest = hashlib.sha256(b"").hexdigest()
+                                    if any(name not in hashes for name in zero_names):
+                                        n_zero_byte_unverified_versions += 1
+                                    if any(name in hashes and
+                                           str(hashes[name]).lower() != empty_digest
+                                           for name in zero_names):
+                                        n_zero_byte_hash_mismatch_versions += 1
+                                        valid_files = False
                         else:
                             valid_files = False
                     except (OSError, ValueError):
@@ -153,7 +185,10 @@ def analyze(root: Path, benchmark_summary: Path | None = None, assigned_ids: set
     add("assigned_ids_expected", len(assigned_ids) if assigned_ids is not None else None, "ids", "From provided official ID list only")
     add("assigned_ids_missing_from_manifest", len(assigned_ids - set(manifest)) if assigned_ids is not None else None,
         "ids", "Number of official assigned IDs missing in manifest")
-    add("source_versions_with_invalid_kept_files", n_invalid_source_versions, "versions", "Source success records with missing/zero-byte/mismatched source files")
+    add("source_versions_with_invalid_kept_files", n_invalid_source_versions, "versions", "Source success records with missing/mismatched files or integrity hashes")
+    add("source_versions_with_zero_byte_files", n_zero_byte_versions, "versions", "Versions containing zero-byte .tex/.bib; can be legitimate")
+    add("source_versions_with_unverified_zero_byte_files", n_zero_byte_unverified_versions, "versions", "Zero-byte versions lacking archive-time hash verification; include in operational handling coverage but not verified-integrity claims")
+    add("source_versions_with_zero_byte_hash_mismatch", n_zero_byte_hash_mismatch_versions, "versions", "Zero-byte versions conflicting with recorded archive-time hashes; excluded from source completion")
     add("discovery_success_papers", len(existing), "papers", "Manifest papers marked success")
     add("discovery_not_found", discovery["not_found"], "ids", "Manifest latest records marked not_found")
     add("discovery_api_error", discovery["api_error"], "ids", "Manifest latest records marked api_error")
@@ -205,10 +240,12 @@ def analyze(root: Path, benchmark_summary: Path | None = None, assigned_ids: set
     if problems:
         add("invalid_manifest_lines", len(problems), "lines", "Malformed JSONL lines ignored by manifest parser")
 
-    run_log = root / "logs" / "run_log.csv"
     discovery_seconds = 0.0
     discovery_runs = set()
-    if run_log.is_file():
+    for folder in roots:
+        run_log = folder / "logs" / "run_log.csv"
+        if not run_log.is_file():
+            continue
         with run_log.open(encoding="utf-8-sig", newline="") as handle:
             for row in csv.DictReader(handle):
                 if row.get("stage") == "discovery":
@@ -217,7 +254,7 @@ def analyze(root: Path, benchmark_summary: Path | None = None, assigned_ids: set
                     except (ValueError, TypeError):
                         continue
                     discovery_seconds += seconds
-                    discovery_runs.add(row.get("run_id", "unknown"))
+                    discovery_runs.add((folder, row.get("run_id", "unknown")))
     add("discovery_total_logged_stage_seconds", round(discovery_seconds, 3) if discovery_runs else None,
         "seconds", "Sum of discovery-stage wall times across logged runs (including retries/resumes); not full-pipeline wall time")
     add("discovery_logged_runs", len(discovery_runs), "runs", "Number of distinct run_id values with discovery records")
@@ -259,13 +296,16 @@ def analyze(root: Path, benchmark_summary: Path | None = None, assigned_ids: set
 
 def main(argv=None):
     p = argparse.ArgumentParser(description="Compute Milestone 1 statistics from local corpus and logs")
-    p.add_argument("--data-dir", required=True, type=Path)
-    p.add_argument("--output", type=Path)
+    p.add_argument("--data-dir", required=True, type=Path, nargs="+",
+                   help="one data folder, or the folders of every range read as one corpus")
+    p.add_argument("--output", type=Path, help="default: <data-dir>/logs/summary_statistics.csv (one folder only)")
     p.add_argument("--benchmark-summary", type=Path, help="Optional selected full benchmark summary JSON")
     p.add_argument("--assigned-ids", type=Path, help="One ID per line from the official assignment")
     p.add_argument("--paper-timings", type=Path, help="CSV of separately measured fresh standalone per-paper samples")
     args = p.parse_args(argv)
-    output = args.output or args.data_dir / "logs" / "summary_statistics.csv"
+    if len(args.data_dir) > 1 and not args.output:
+        p.error("--output is required with several --data-dir folders")
+    output = args.output or args.data_dir[0] / "logs" / "summary_statistics.csv"
     ids = read_ids_file(args.assigned_ids) if args.assigned_ids else None
     rows = analyze(args.data_dir, args.benchmark_summary, assigned_ids=ids,
                    paper_timings=args.paper_timings)
