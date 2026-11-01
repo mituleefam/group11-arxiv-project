@@ -332,6 +332,7 @@ class _Builder:
         self.top_level: float | None = None
         self.dropping: float | None = None  # level of the References section being left out
         self.item_reported = False
+        self.last_env = ""  # the last transparent environment opened, named when an \item has no list
 
     # -- nodes --------------------------------------------------------------------------
     def new_node(self, kind: str, content: str, parent: str) -> str:
@@ -398,6 +399,8 @@ class _Builder:
                 top = self.frames[-1]
                 if top.type in ("heading", "appendix") and top.level < level:
                     break
+                if top.type in ("list", "item", "env") and level >= SECTION_LEVELS["paragraph"]:
+                    break  # \paragraph{Key features:} in an abstract or an \item belongs to it
                 if top.type in ("list", "item", "env"):
                     self.tree.problems.append(f"\\{command}{{{title[:40]}}} inside an open {top.env or top.type}")
                 self.frames.pop()
@@ -450,7 +453,7 @@ class _Builder:
                 return True
         if not self.item_reported:
             self.item_reported = True
-            self.tree.problems.append("\\item outside a known list (a list made by a macro?)")
+            self.tree.problems.append(f"\\item in {self.last_env or 'no list'}, not a known list")
         return False
 
 
@@ -519,6 +522,8 @@ def build(text: str, root_id: str, registry, extract_leaves) -> Tree:
                 b.section_env(env, begin)
             else:
                 b.buffer.append(m.group(0))  # transparent environment
+                if begin:
+                    b.last_env = env
         elif b.dropping is not None and not (m.group("appendix") or m.group("ackcmd")):
             if m.group("front"):
                 pos = _skip_arguments(masked, pos, FRONT_COMMANDS[m.group("front")])

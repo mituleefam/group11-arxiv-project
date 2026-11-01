@@ -236,6 +236,21 @@ class HardSourceTest(unittest.TestCase):
         self.assertEqual([r["content"] for r in reg.rows() if r["kind"] == "heading"], ["One", "Two"])
         self.assertTrue(any("no heading" in p for p in self.headings("Only text here.")[2].problems))
 
+    def test_paragraph_inside_an_abstract_or_item_stays_there(self):
+        reg, root, tree = tree_of("\\begin{abstract}\nWe study.\n\\paragraph{Key features:} Fast.\n\\end{abstract}\n"
+                                  "\\section{One}\n\\begin{itemize}\\item A.\n\\paragraph{Note.} B.\n\\item C.\\end{itemize}\nD.")
+        assert_tree(self, reg, root, tree)
+        self.assertEqual(tree.problems, [])
+        rows, kids = children(reg, tree)
+        ids = {r["content"]: e for e, r in rows.items()}
+        self.assertIn(("paragraph", "Key features:"), kids[ids["Abstract"]])
+        self.assertEqual([c for _, c in kids[root]], ["Abstract", "One"])
+        self.assertIn(("sentence", "D."), kids[ids["One"]])
+
+    def test_item_without_list_names_the_environment(self):
+        _, _, tree = tree_of("\\section{A}\n\\begin{tasks}\\item One.\\end{tasks}")
+        self.assertIn("\\item in tasks, not a known list", tree.problems)
+
     def test_root_is_what_includes_the_documentclass(self):
         g = self.gather({"main.tex": "\\input{header}\n\\begin{document}\nA.\n\\end{document}",
                          "header.tex": "\\documentclass{article}", "fig.tex": "\\documentclass{standalone}\\begin{document}F\\end{document}"})

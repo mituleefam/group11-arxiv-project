@@ -3,8 +3,9 @@ minimal stand-ins used while a module is not in src/ yet.
 
 The pipeline only goes through these functions, so each member can write
 their module alone and the whole pipeline runs at every stage of the work:
-load() takes the member's function when the module and the function exist,
-the stand-in otherwise, and says which (pipeline_m2.py prints it). The
+load() takes the member's function when the module and the function exist
+(at the top of src/ or in a package of PACKAGES), the stand-in otherwise, and
+says which (pipeline_m2.py prints it). The
 stand-ins are deliberately simple: they keep the tables valid, they are not
 the members' work.
 
@@ -230,6 +231,7 @@ class Components:
     stand_ins: list[str] = field(default_factory=list)  # "module.function" replaced by a stand-in
 
 
+PACKAGES = ("", "reference_parser")  # where a member's module can be: src/, then src/reference_parser/
 SLOTS = [  # (attribute, module, name in the module, owner)
     ("clean", "cleaner", "clean", "Member 2"),
     ("normalize", "normalizer", "normalize", "Member 2"),
@@ -249,11 +251,15 @@ def load(use_modules: bool = True) -> Components:
     for attribute, module_name, name, owner in SLOTS:
         function = None
         if use_modules:
-            try:
-                function = getattr(importlib.import_module(module_name), name, None)
-            except ModuleNotFoundError as exc:
-                if exc.name != module_name:
-                    raise  # the module exists but one of its own imports is missing
+            for package in PACKAGES:
+                full_name = f"{package}.{module_name}" if package else module_name
+                try:
+                    function = getattr(importlib.import_module(full_name), name, None)
+                except ModuleNotFoundError as exc:
+                    if exc.name not in (full_name, package):
+                        raise  # the module exists but one of its own imports is missing
+                if function is not None:
+                    break
         if function is None:
             components.stand_ins.append(f"{module_name}.{name} ({owner})")
         else:

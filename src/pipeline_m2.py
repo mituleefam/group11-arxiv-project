@@ -101,6 +101,10 @@ def code_version(comp: m2_contract.Components) -> str:
         path = SRC / f"{name}.py"
         if path.is_file():
             digest.update(name.encode() + b"\0" + path.read_bytes())
+    for package in m2_contract.PACKAGES:
+        if package:  # a package holds the helpers of its modules too
+            for path in sorted((SRC / package).glob("*.py")):
+                digest.update(path.name.encode() + b"\0" + path.read_bytes())
     return digest.hexdigest()[:12]
 
 
