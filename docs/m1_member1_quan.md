@@ -27,6 +27,7 @@ từ log chạy thật của nhóm.
 | `ca0fe44`, `ae69170`, `101cbb5` | 27–28/10 | Notebook chạy trên Colab (thử, nhóm, bản final) |
 | `1930137` | 28/10 | References: nhiều bài trong một request `/paper/batch` của Semantic Scholar |
 | `1d8fa3b` | 29/10 | Crawl cả nhóm theo từng bước có lưu Drive (`chunked_crawl.py`, `snapshot.py`), gác file arXiv chưa trả |
+| `ddeecb9` | 03/11 | Thêm đường đi qua AWS API Gateway (và nhiều tài khoản Webshare cho file lớn), 8 kết nối tải, chờ ngắn hơn và 1 request thăm dò sau mỗi lần arXiv từ chối |
 
 Phần tải mã nguồn ban đầu (`downloader.py`, `extractor.py`, `checkpoint.py`) là của
 Member 2, references ban đầu (`references.py`) của Member 3, kiểm tra và benchmark
@@ -112,6 +113,14 @@ không module nào tự `sleep` riêng:
 - **File arXiv không trả được trong nhiều giờ** (gặp thật trong lần chạy tháng 10:
   vài phiên bản trả 503/429 hàng giờ liền, mỗi lần làm cả crawler dừng, tổng khoảng
   30 phút): lỗi 2 lần thì **gác lại** để lượt sau tải, không làm dừng file khác.
+- **Chờ ngắn và thăm dò** (`ddeecb9`): lần chờ đầu 5 s, gấp đôi mỗi lần bị từ chối
+  tiếp, tối đa 2 phút; mỗi lần arXiv trả lời bình thường thì lần chờ sau giảm một nửa;
+  hết chờ chỉ gửi **1 request thăm dò**, có trả lời bình thường thì các kết nối khác
+  mới chạy tiếp. Lý do, từ log chạy thật 5200 ID: 46% thời gian là chờ, trong đó có 92
+  phút liền mỗi lần 429 phải chờ 5 phút dù arXiv vẫn trả phần lớn file.
+- **8 kết nối tải** (chỉnh bằng `KET_NOI` ở Bước 1 của notebook, tối đa 10): mỗi file
+  mất khoảng 5,5 s mới về hết, nên 6 kết nối chỉ đạt khoảng 55% nhịp 2 request/giây.
+  Nhịp không đổi: thêm kết nối không làm tăng số request mỗi giây.
 - **Bỏ cuộc có hạn**: arXiv từ chối liên tục 30 phút (`--max-wait-minutes`) thì dừng
   với mã 3, mọi thứ đã xong vẫn được lưu.
 - Mọi lần dừng ghi vào `logs/arxiv_throttle_log.csv` để báo cáo.
@@ -194,12 +203,91 @@ tải dở bị xoá trên Drive rơi vào Thùng rác làm đầy Drive.
 - `src/chay-crawler-nhom-final.ipynb`: chạy chính thức cho cả nhóm, điền khoảng ID rồi
   chạy; key Semantic Scholar để trong *Secrets* của Colab, không ghi trong code.
 - `src/chay-thu-crawler-nhom.ipynb`: chạy thử khoảng 100 ID trước khi chạy thật.
-- Proxy và WARP là **tuỳ chọn** (`DUNG_PROXY`, `DUNG_WARP`). Thầy có nêu trong Q&A
-  (sheet Milestone 3) rằng nhóm có thể dùng "các kỹ thuật tối ưu đa luồng hoặc VPN
-  switch IP để vượt qua rate limit nhằm tăng tốc quá trình tải". Cần biết thêm: điều
-  khoản API của arXiv ghi "You should not attempt to overcome these limits by
-  increasing the number of machines used to make requests", và FAQ của Colab không
-  cho kết nối tới proxy từ xa. Nếu runtime bị ngắt bất thường thì tắt hai công tắc này.
+- Proxy, WARP và AWS là **tuỳ chọn**, xem mục 3.11.
+
+### 3.11. Đổi đường đi (IP): proxy Webshare, WARP, AWS API Gateway
+
+Mục đích: khi arXiv trả 429 cho **một** địa chỉ IP, các request khác vẫn đi tiếp qua IP
+khác, thay vì cả crawler phải dừng chờ. Cơ sở trong môn học là câu thầy trả lời trong
+Q&A (sheet Milestone 3): nhóm có thể "vận dụng các kỹ thuật tối ưu đa luồng hoặc VPN
+switch IP để vượt qua rate limit nhằm tăng tốc quá trình tải".
+
+Mọi đường đi **dùng chung một bộ giới hạn** (mục 3.4): tổng số request của mọi IP cộng
+lại vẫn theo đúng nhịp đó. Code ghi rõ: "more IPs add routes, not speed", tức thêm
+IP là thêm đường dự phòng, không phải gửi nhanh hơn. Tất cả nằm trong `rate_limiter.py`.
+
+| Đường đi | Ai thêm | Dùng cho | Bật bằng |
+| :-- | :-- | :-- | :-- |
+| Mạng của Colab | (mặc định) | Mọi request | Luôn có |
+| **Proxy Webshare** (`ProxyPool`) | Quân, `a1582b5` | Xoay vòng các request gọi **API** arXiv | `DUNG_PROXY` ở Bước 1 + secret `ARXIV_PROXIES` của riêng mỗi người (không ghi trong code, `proxies.txt` không được commit) |
+| **Cloudflare WARP** | Quân, notebook `ca0fe44` | Tải **file nguồn**: một IP thứ hai bên cạnh IP của Colab | `DUNG_WARP` ở Bước 1; notebook tự cài `wgcf` + `wireproxy` (cổng SOCKS5 `127.0.0.1:40000`), crawler tự nhận nếu cổng mở |
+| **AWS API Gateway** (`requests-ip-rotator`) | Quân, `ddeecb9` | Request API, và mặc định cả file nguồn, đi qua gateway của tài khoản AWS | Chỉ khi có `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` trong môi trường; thiếu key hoặc thiếu thư viện thì tự tắt |
+| **Nhiều tài khoản Webshare cho file lớn** | Quân, `ddeecb9` | File AWS không chở được (> 10 MB) | `ARXIV_PROXY_LARGE_FILES=1` |
+
+Các kỹ thuật đi kèm:
+
+- **Dừng riêng từng đường** (Thu, `6ef1619`): 429 qua một đường thì chỉ đường đó nghỉ
+  (15 s, gấp đôi, tối đa 5 phút), các đường khác đi tiếp. Chỉ khi không còn đường nào
+  rảnh thì mọi request mới dừng như mục 3.4. Ghi log `route_pause` trong
+  `arxiv_throttle_log.csv`.
+- **Cách ly proxy hỏng** (`_quarantine`): proxy lỗi kết nối bị bỏ qua 5 phút, request
+  được thử lại qua đường kế tiếp; lỗi proxy không tính là arXiv từ chối.
+- **AWS chở không được thì đổi đường ngay**: API Gateway từ chối câu trả lời trên 10 MB
+  và cắt request sau 29 s. Khi đó file được gửi lại qua Colab/WARP sau khi chờ lượt mới,
+  và URL đó không đi qua AWS nữa (log `aws_fallback`). Gateway được khai báo kiểu nhị
+  phân `*/*` để file `.tar.gz` không bị đổi thành chữ. arXiv trả 403 qua AWS 3 lần
+  trong khi Colab/WARP vẫn tải được thì AWS bị tắt cho phần còn lại của lượt chạy.
+- **Webshare theo tài khoản**: các IP cùng user/password được gom thành một tài khoản,
+  mỗi tài khoản là một lượt trong vòng xoay để dùng đều băng thông (gói miễn phí 1 GB/tháng).
+  Webshare trả 402 (hết băng thông) thì bỏ cả tài khoản; 407 thì bỏ IP đó; 3 IP của
+  một tài khoản bị bỏ thì bỏ cả tài khoản.
+
+**Cần biết trước khi bật:**
+
+- **Điều khoản arXiv**: "the following rate limits apply to all of the machines under
+  your control as a whole" và "You should not attempt to overcome these limits by
+  increasing the number of machines used to make requests". Thầy cho phép trong môn
+  học, nhưng điều khoản của arXiv vẫn ghi như vậy; nên ghi rõ cả hai trong báo cáo.
+- **Colab**: FAQ của Colab không cho "connecting to remote proxies". Runtime bị ngắt
+  bất thường khi đang bật proxy/WARP thì đặt `DUNG_PROXY`, `DUNG_WARP` thành `False`.
+- **Chi phí**: AWS API Gateway tính phí theo request; Webshare miễn phí có 1 GB/tháng.
+- **Chưa có trên GitHub**: phần notebook để tạo gateway AWS và nạp key AWS
+  (`DUNG_AWS`, `AWS_TAI_FILE` mà code nhắc tới) chưa có trong 2 notebook của repo;
+  `requirements.txt` cũng chưa có `requests-ip-rotator` và `boto3`. Không có những thứ
+  này thì crawler vẫn chạy bình thường, chỉ là không có đường AWS.
+
+#### Nếu muốn bật đường AWS: code cần gì và những điều phải giữ
+
+Code trong repo **chỉ dùng** gateway đã có sẵn trong tài khoản AWS, nó không tự tạo
+gateway (chú thích trong `_start_api_gateway`: "Reuses the gateways the notebook
+created"). Đường AWS chỉ bật khi có đủ 3 thứ dưới đây; thiếu bất kỳ thứ nào thì
+crawler chạy tiếp như không có AWS (thiếu key thì không in gì; có key mà khởi động
+lỗi thì in `[proxy] Lỗi khởi động AWS API Gateway: ...`):
+
+| Cần có | Ở đâu | Ghi chú |
+| :-- | :-- | :-- |
+| Thư viện `requests-ip-rotator` và `boto3` | Cài trên Colab trước khi chạy crawler | Chưa có trong `requirements.txt` |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Biến môi trường của tiến trình crawler | Lấy từ *Secrets* của Colab, giống `S2_API_KEY` |
+| Gateway của tài khoản AWS cho `https://export.arxiv.org` | Tạo trước khi crawl | Bước tạo nằm trong notebook của Quân, **chưa có trên GitHub** |
+
+Các công tắc liên quan: `ARXIV_AWS_FILES=0` để chỉ cho request API đi qua AWS, file
+nguồn đi Colab/WARP (mặc định `1`: cả file nguồn); `ARXIV_PROXY_LARGE_FILES=1` để file
+trên 10 MB đi vòng xoay Webshare thay vì chỉ Colab/WARP.
+
+Những điều phải giữ khi dùng AWS:
+
+- **Key**: chỉ để trong *Secrets* của Colab, không dán vào ô code, không in ra, không
+  commit. Nên dùng một user IAM riêng, chỉ có quyền với API Gateway, và xoá key đó khi
+  nhóm làm xong đồ án. Lộ key AWS là người khác dùng được tài khoản và tính tiền vào đó.
+- **Chi phí**: API Gateway tính tiền theo số request. Theo dõi trang Billing của AWS
+  trong lúc chạy; xong việc thì **xoá các gateway** đã tạo, để không bị tính phí tiếp.
+- **Tắt nhanh**: bỏ 2 biến key (hoặc không cài thư viện) là crawler không dùng AWS nữa,
+  không cần sửa code.
+- **Kiểm tra AWS có chạy không**: AWS bật thì lúc khởi động có dòng
+  `[proxy] Đã khởi động AWS API Gateway thành công: N vùng ...`; không thấy dòng này là
+  không có đường AWS. Trong lúc chạy, `[AWS] ...: gửi lại qua ...` và `aws_fallback`
+  trong `arxiv_throttle_log.csv` là các file AWS không chở được, đã tải lại qua Colab/WARP;
+  `[AWS] ... tắt AWS cho phần còn lại của bước này` là arXiv trả 403 qua AWS 3 lần.
 
 ---
 
@@ -212,7 +300,7 @@ main site arxiv.org ... and use a descriptive User-Agent header with the same
 3-second pacing."
 
 Crawler hiện tải theo nhịp trang bulk data của arXiv (trung bình 2 request/giây,
-nhiều file cùng lúc), nhanh hơn 3 giây/file. Căn cứ: thầy trả lời trong Q&A rằng có
+8 file cùng lúc), nhanh hơn 3 giây/file. Căn cứ: thầy trả lời trong Q&A rằng có
 thể "vận dụng các kỹ thuật tối ưu đa luồng ... để vượt qua rate limit nhằm tăng tốc
 quá trình tải", và chính arXiv đề xuất nhịp "bursts at 4 requests per second" cho
 `export.arxiv.org`.
@@ -242,7 +330,101 @@ archive" và "those are the only file types the working corpus keeps", nên nhó
 
 ---
 
-## 5. Số đo thật để đưa vào báo cáo
+## 5. Tất cả công tắc và tham số
+
+### 5.1. Notebook (Bước 1)
+
+| Biến | Mặc định | Ý nghĩa |
+| :-- | :-- | :-- |
+| `CAC_KHOANG` | (phải điền) | Mỗi khoảng một dòng: tên và 4 cột trong sheet. Chạy lần lượt từng khoảng |
+| `THU_MUC_LUU` | `chinh_thuc` (thử: `chay_thu`) | Thư mục trên Drive giữ bản lưu `.tar.gz` và kết quả |
+| `DOAN` | 1000 | Số bài mỗi bước; runtime chết thì chỉ làm lại bước đang chạy |
+| `NGAY_KAGGLE` | `True` | Ngày nộp của bài được trích lấy từ Kaggle thay vì API arXiv |
+| `CHO_TOI_DA` | 30 | Phút arXiv từ chối liên tục thì dừng bước (tự thử lại một lần sau 15 phút) |
+| `KET_NOI` | 8 | Số file tải cùng lúc, tối đa 10; nhịp vẫn 2 request/giây |
+| `DUNG_PROXY` | `True` | Xoay proxy Webshare cho request API (cần secret `ARXIV_PROXIES`) |
+| `DUNG_WARP` | `True` | Notebook tự cài WARP làm IP thứ hai cho việc tải file |
+| `CHAP_NHAN_CON_THIEU` | `False` | `True`: Bước 6 trả mã 4 (còn vài file chưa tải được) vẫn đi tiếp sang Bước 7 |
+| `FILE_MOI` | `github` | Lấy code từ nhánh `BRANCH`, hoặc nạp file `.py` mới chưa push |
+
+### 5.2. `main.py` (chạy tay hoặc trong từng bước)
+
+| Tham số | Ý nghĩa |
+| :-- | :-- |
+| `--range M1 ID1 M2 ID2` hoặc `--start ID --end ID` | Khoảng ID, viết như 4 cột trong sheet hoặc như hai ID |
+| `--data-dir` | Thư mục dữ liệu (để ngoài repo; trên Colab dùng `/content/...`) |
+| `--stages` | Chạy riêng một số bước: `discovery,metadata,download,references` |
+| `--limit N` | Chạy thử N ID đầu |
+| `--batch-size` | Số ID mỗi request API (mặc định 100) |
+| `--retry-passes` | Số lượt thử lại phần còn thiếu (mặc định 2) |
+| `--max-wait-minutes` | Phút arXiv từ chối liên tục thì dừng với mã 3 (mặc định 30) |
+| `--no-arxiv-dates` | Không hỏi arXiv ngày nộp của bài được trích (để `ref_dates_kaggle.py` điền) |
+| `--force`, `--user-agent` | Làm lại bước đã xong; đổi User-Agent gửi arXiv |
+
+### 5.3. Biến môi trường
+
+| Biến | Ý nghĩa |
+| :-- | :-- |
+| `S2_API_KEY` | Key Semantic Scholar của riêng mỗi người (1 request/giây khi có key) |
+| `ARXIV_CONNECTIONS` | Số file tải cùng lúc (notebook đặt từ `KET_NOI`) |
+| `ARXIV_PROXIES` | Danh sách proxy Webshare, cách nhau bằng dấu phẩy (notebook đọc từ secret) |
+| `WARP_PORT` | Cổng SOCKS5 của WARP (mặc định 40000) |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Bật đường AWS (mục 3.11) |
+| `ARXIV_AWS_FILES` | `0`: file nguồn không đi qua AWS |
+| `ARXIV_PROXY_LARGE_FILES` | `1`: file trên 10 MB đi vòng xoay Webshare |
+
+---
+
+## 6. Đọc log để biết kỹ thuật nào đã chạy
+
+Phần lớn nằm trong `<data-dir>/logs/` (trên Drive: trong bản lưu của từng khoảng);
+`chunk_journal.jsonl` ở `<data-dir>/work/`, `snapshot_log.csv` ở thư mục bản lưu trên Drive.
+
+| File | Một dòng là | Dùng để |
+| :-- | :-- | :-- |
+| `run_log.csv` | Một bước của một lần chạy (bắt đầu, kết thúc, số giây) | Thời gian từng bước |
+| `arxiv_api_log.csv` | Một request API arXiv | Số request, thời gian, lỗi của API |
+| `download_log.csv` | Một phiên bản được xử lý | Trạng thái, số byte tải về và giữ lại, số lần thử |
+| `references_log.csv` | Một bài mỗi lần lấy references | Trạng thái references, cách lấy (`/paper/batch` hay từng trang) |
+| `pass_log.csv` | Một lượt | Còn thiếu gì sau mỗi lượt, để tính tỉ lệ thành công theo lượt |
+| `arxiv_throttle_log.csv` | Một lần arXiv từ chối hoặc không trả lời | Thời gian chờ, xem bảng dưới |
+| `work/chunk_journal.jsonl`, `snapshot_log.csv` | Một bước của `chunked_crawl.py`, một lần lưu/khôi phục Drive | Biết bước nào xong, lưu Drive mất bao lâu |
+
+Cột `event` của `arxiv_throttle_log.csv`:
+
+| `event` | Nghĩa |
+| :-- | :-- |
+| `pause` | Mọi request arXiv dừng chung một khoảng (cột `pause_seconds`) |
+| `isolated` | Một file lỗi riêng, các file khác vẫn tải |
+| `defer` | File lỗi lần thứ hai bị gác lại cho lượt sau |
+| `recover` | arXiv trả lời bình thường trở lại: lần chờ sau về 5 s |
+| `give_up` | Bị từ chối liên tục quá `--max-wait-minutes`: dừng với mã 3 |
+| `route_pause` | Chỉ một đường (Colab, WARP, AWS, proxy) dừng, các đường khác đi tiếp |
+| `aws_fallback` | AWS không chở được file (trên 10 MB, quá 29 s...): đã tải lại qua Colab/WARP |
+
+`group_benchmark.py` gộp các file này cho cả nhóm (cột `arxiv_pause_seconds`,
+`arxiv_pauses`, `arxiv_deferred`, `arxiv_route_pauses`...).
+
+---
+
+## 7. Sự cố thường gặp
+
+| Thấy gì | Nghĩa là | Làm gì |
+| :-- | :-- | :-- |
+| `Crawler return code: 0` | Xong mọi khoảng | Sang Bước 7 |
+| Mã **4** | Xong, còn vài file arXiv chưa trả được | 1–2 giờ sau *Run all* lại: chỉ làm phần còn thiếu |
+| Mã **3** | arXiv từ chối liên tục (đã tự thử lại sau 15 phút) | 1–2 giờ sau *Run all* lại |
+| Mã **130** | Bấm Stop | *Run all* lại khi muốn: làm tiếp từ bước dở |
+| Mã **1** | Một bước lỗi 2 lần, hoặc không lưu được lên Drive | Đọc dòng lỗi ngay phía trên; Drive đầy thì dọn chỗ và thùng rác |
+| `[arXiv] HTTP 429 ... pausing all arXiv requests for N s` | arXiv đang quá tải | Bình thường, cứ để chạy |
+| `... put aside for a later pass` | File arXiv chưa trả được, đã gác lại | Bình thường, lượt sau tải lại |
+| `[proxy] ... bỏ qua 5 phút` | Proxy đó lỗi kết nối | Cùng một proxy hiện mãi thì xoá khỏi secret |
+| Runtime tự ngắt khi đang bật proxy/WARP | Có thể Colab chặn kết nối proxy | Đặt `DUNG_PROXY`, `DUNG_WARP` thành `False` |
+| Bước 2 in `0 bản lưu` dù đã chạy trước đó | Bước 1 bị đổi hoặc sai tài khoản Drive | Dừng ngay, sửa lại Bước 1 kẻo crawl lại từ đầu |
+
+---
+
+## 8. Số đo thật để đưa vào báo cáo
 
 Lần chạy 5200 ID của Thu (30/10/2026, cách chạy cũ: dữ liệu trên Drive, 4 kết nối):
 
@@ -261,7 +443,7 @@ Nhân viên arXiv cũng nói 429 là do tải chung của server.
 
 ---
 
-## 6. Chạy thử nhanh
+## 9. Chạy thử nhanh
 
 ```bash
 pip install -r src/requirements.txt
