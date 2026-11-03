@@ -15,10 +15,12 @@ pace that covers its requests instead of sleeping on its own:
     "the dedicated site export.arxiv.org", and "we suggest that a *reasonable
     rate* to be bursts at 4 requests per second with a 1 second `sleep`, per
     burst". Read here as: at most 4 requests start, 0.25 s apart, then none
-    for 1 s, i.e. 2 requests per second on average, with up to 6 downloads
-    open at once (a source file often takes several seconds to arrive, so 4
-    open downloads could not keep this pace; the page sets no connection
-    limit, and more connections do not start more requests per second).
+    for 1 s, i.e. 2 requests per second on average, with up to 8 downloads
+    open at once (ARXIV_CONNECTIONS in the environment changes it, at most 10).
+    A source file takes about 5.5 s to arrive (a 5200-ID crawl of October 2026:
+    8376 requests in 11516 s outside the pauses, 4 at a time), so 4 or 6 open
+    downloads cannot keep this pace; the page sets no connection limit, and
+    more connections do not start more requests per second.
 
 The Terms add that the rate limits "apply to all of the machines under your
 control as a whole", that "You should not attempt to overcome these limits by
@@ -39,12 +41,21 @@ principle as the tenacity and backoff libraries; the pause here is shared by
 every module and thread, which those per-call decorators do not provide):
 
   * HTTP 429 (arXiv overloaded): every request would be refused, so *every*
-    arXiv request pauses: 15 s, doubled each time arXiv refuses again after a
-    pause, up to 5 minutes, or longer if the server sends Retry-After. Several
+    arXiv request pauses: 5 s, doubled each time arXiv refuses again after a
+    pause, up to 2 minutes, or longer if the server sends Retry-After. Several
     downloads are open at once, so one refusal often comes back on several of
     them: refusals that arrive during a pause belong to the same episode and
     do not double it again. The pace is not slowed afterwards, since the cause
     is the total load, not our rate.
+  * After a pause only one request goes out (the probe). The others wait for
+    its answer, so a refusal that goes on costs one request per pause and does
+    not count against the files that happen to be next; a normal answer lets
+    them all go. Every normal answer also halves the next pause: arXiv often
+    refuses only part of the requests for an hour or more (a 5200-ID crawl of
+    October 2026: 92 minutes of 5-minute pauses, each after one refusal among
+    requests that mostly succeeded; 46% of its run time was spent waiting), and
+    a pause that only came back down after 30 successes in a row cost 5 minutes
+    per refusal.
   * HTTP 503 (excessive use) or no answer at all (network down, DNS failure,
     server silent): a single failing file is only retried by its caller, while
     the other downloads go on; it does not stop the crawl. When two different
@@ -68,10 +79,12 @@ every module and thread, which those per-call decorators do not provide):
     rules above.
   * Any normal answer ends a run of refusals.
 
-Routes (Colab's own network, WARP, the Webshare proxies; see ProxyPool):
+Routes (Colab's own network, WARP, the Webshare proxies, AWS API Gateway;
+see ProxyPool and "AWS" below):
 when a refusal above would pause every request, and the request went
 through a route while another route that serves the same kind of request
-(source files: Colab and WARP; API calls: every route) is not paused, only
+(source files: Colab, WARP and AWS, plus the Webshare proxies for a file
+AWS found over 10 MB, see "Webshare"; API calls: every route) is not paused, only
 that route pauses instead: 15 s, doubled at each new refusal of that route
 up to 5 minutes, back to 15 s after it serves a request. ProxyPool skips a
 paused route, so the other routes go on at the same shared pace (the routes
@@ -81,10 +94,43 @@ route, and every refusal pauses every request, as before. Route pauses are
 logged as "route_pause" in arxiv_throttle_log.csv; they do not count in
 total_paused_seconds, since requests went on through the other routes.
 
+AWS (requests-ip-rotator, only when AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+are set): API calls, and with ARXIV_AWS_FILES=1 (the default) source files
+too, go first through the API Gateways of the account; every request still
+waits for its turn in the limiters above, so AWS adds a route, not speed.
+API Gateway (REST) buffers an answer and refuses one over 10 MB, so a source
+file over 10 MB, or one AWS fails to carry for any other reason (integration
+timeout after 29 s, gateway deleted, no answer), is sent again at once
+through Colab/WARP after waiting for a new turn of the pace, and that URL
+never goes through AWS again in this process ("aws_fallback" in
+arxiv_throttle_log.csv). API Gateway also turns a binary body into UTF-8 text
+unless the API lists it as binary, so every gateway gets the binary media type
+"*/*" when the crawler starts (once; then the stage is redeployed). Answers
+of arXiv itself through AWS (200, 404, 429, 503...) are handled like any
+other route; if arXiv answers HTTP 403 through AWS while Colab/WARP get the
+file, three times, AWS is turned off for the rest of the process.
+
+Webshare (several accounts, e.g. 5 free accounts x 10 IPs, all listed in
+ARXIV_PROXIES / proxies.txt): the proxies of one account share its
+user/password (the backbone form adds -1, -2... to the user), which is how
+they are grouped into accounts. API calls use every proxy as before. With
+ARXIV_PROXY_LARGE_FILES=1, a source file AWS refused as over 10 MB is sent
+again through a two-level rotation instead of Colab/WARP alone: Colab,
+WARP, then each account as ONE slot (and its IPs in turn inside it), so
+every account carries the same share as Colab or WARP and spends its
+bandwidth (1 GB a month on the free plan) evenly. The shared pace above is
+unchanged: more IPs add routes, not speed. Webshare tells why it refused in
+its answer to CONNECT: 402 (bandwidth used up, plan unpaid) drops every IP
+of the account for the rest of the process; 407 (credentials refused, IP
+removed from the list) drops that IP, and the account once 3 of its IPs
+are dropped; any other proxy failure quarantines the IP for 5 minutes, and
+the whole account when 3 of its IPs are quarantined at once. Files under
+10 MB, and every file when AWS is off, keep going through Colab/WARP.
+
 arXiv never says how long it will keep refusing. The pauses are therefore not
-a guess of when the refusal ends, but how often requests check whether it has
-ended: about 0.25, 0.75, 1.75, 3.75, 7.75 and 12.75 minutes after the first
-refusal, then every 5 minutes. If arXiv has refused or not answered every
+a guess of when the refusal ends, but how often one request checks whether it
+has ended: about 5, 15, 35, 75, 155 and 315 seconds after the first refusal,
+then every 2 minutes. If arXiv has refused or not answered every
 request for `give_up_after` seconds (30 minutes by default, set with main.py
 --max-wait-minutes), ArxivUnavailable is raised: the crawl stops instead of
 waiting for hours, and everything finished so far stays saved.
@@ -103,8 +149,10 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
 
+# requests_ip_rotator (AWS) is imported only when AWS keys are set: see _get_api_gateway().
 import requests
 from requests.adapters import HTTPAdapter
 
@@ -126,6 +174,21 @@ THROTTLE_LOG_FIELDS = [
 WARP_HOST = "127.0.0.1"
 WARP_PORT = int(os.environ.get("WARP_PORT", "40000"))
 PROXIES_FILE = Path(__file__).resolve().parent / "proxies.txt"
+
+# AWS API Gateway (requests-ip-rotator): see "AWS" in the module docstring.
+AWS_ROUTE = "aws"                      # route name (printed as "AWS")
+AWS_SITE = "https://export.arxiv.org"  # the gateways forward to this site only
+AWS_HOST = "export.arxiv.org"
+AWS_BINARY_TYPE = "*/*"                # binary media type every gateway needs (see _make_binary)
+# Source files through AWS too (those over 10 MB fall back to Colab/WARP): ARXIV_AWS_FILES=0 turns it off.
+AWS_FILES = os.environ.get("ARXIV_AWS_FILES", "1").strip().lower() not in ("0", "false", "no", "off")
+AWS_MAX_STRIKES = 5                    # failures of AWS itself in a row before it is skipped for 5 min
+
+# Webshare nhiều tài khoản (xem "Webshare" ở docstring). ARXIV_PROXY_LARGE_FILES=1: file nguồn AWS
+# không chở được vì quá 10 MB đi xoay vòng Colab + WARP + từng tài khoản Webshare. Mặc định tắt: như cũ.
+PROXY_LARGE_FILES = os.environ.get("ARXIV_PROXY_LARGE_FILES", "0").strip().lower() in ("1", "true", "yes", "on")
+ACCOUNT_BAD_IPS = 3                    # số IP của một tài khoản cùng bị bỏ thì bỏ cả tài khoản
+_TUNNEL_STATUS = re.compile(r"Tunnel connection failed: (\d{3})")  # mã proxy trả cho CONNECT (https)
 
 
 def _is_warp_running(host: str = WARP_HOST, port: int = WARP_PORT) -> bool:
@@ -162,10 +225,78 @@ def _quarantine(proxy: str, reason: str) -> None:
     with _bad_lock:
         now = time.monotonic()
         new = _bad_until.get(proxy, 0.0) <= now
-        _bad_until[proxy] = now + QUARANTINE_SECONDS
+        # max: không rút ngắn một IP/tài khoản đã bị bỏ hẳn (hết dung lượng, 407)
+        _bad_until[proxy] = max(_bad_until.get(proxy, 0.0), now + QUARANTINE_SECONDS)
     if new:
-        print(f"[proxy] {_mask(proxy)}: {reason}, bỏ qua {QUARANTINE_SECONDS / 60:g} phút "
+        print(f"[proxy] {_route_name(proxy)}: {reason}, bỏ qua {QUARANTINE_SECONDS / 60:g} phút "
               f"(request được thử lại qua đường kế tiếp; không tính là arXiv từ chối)", flush=True)
+
+
+_FOREVER = float("inf")  # bỏ hẳn cho phần còn lại của tiến trình (một bước của crawler)
+_accounts_off: set[int] = set()  # tài khoản Webshare đã bỏ hẳn
+
+
+def _proxy_failed(proxy: str, exc: BaseException) -> None:
+    """Proxy `proxy` của vòng xoay không chở được request (lỗi kết nối). Với
+    https, Webshare trả lý do trong câu trả lời CONNECT, requests đưa vào
+    thông báo lỗi: "Tunnel connection failed: 402 Payment Required"."""
+    m = _TUNNEL_STATUS.search(str(exc))
+    status = int(m[1]) if m else 0
+    _proxy_refused(proxy, status, f"lỗi kết nối ({type(exc).__name__}"
+                   + (f", proxy trả HTTP {status})" if status else ")"))
+
+
+def _proxy_refused(proxy: str, status: int, reason: str) -> None:
+    """402: tài khoản hết dung lượng/chưa trả tiền -> bỏ cả tài khoản. 407:
+    IP này không nhận user/pass (bị thay khỏi danh sách, sai mật khẩu) -> bỏ
+    hẳn IP. Lỗi khác: tạm bỏ IP 5 phút như cũ. ACCOUNT_BAD_IPS IP của cùng một
+    tài khoản cùng bị bỏ: lỗi nằm ở tài khoản, bỏ cả tài khoản (hẳn nếu là
+    407, 5 phút nếu không) thay vì thử lần lượt từng IP còn lại."""
+    n = _ACCOUNT_OF.get(proxy)
+    if status == 402 and n:
+        _drop_account(n, "hết dung lượng hoặc gói chưa trả (proxy trả HTTP 402)", _FOREVER)
+        return
+    if status == 407:
+        with _bad_lock:
+            new = _bad_until.get(proxy, 0.0) != _FOREVER
+            _bad_until[proxy] = _FOREVER
+        if new:
+            print(f"[proxy] {_route_name(proxy)}: proxy trả HTTP 407 (không nhận user/pass, hoặc IP đã bị "
+                  f"thay khỏi danh sách Webshare): bỏ IP này cho phần còn lại của bước", flush=True)
+    else:
+        _quarantine(proxy, reason)
+    if not n:
+        return
+    ips = WEBSHARE_ACCOUNTS[n - 1]
+    now = time.monotonic()
+    with _bad_lock:
+        bad = [p for p in ips if _bad_until.get(p, 0.0) > now]
+        dead = [p for p in bad if _bad_until[p] == _FOREVER]
+    if len(ips) > 1 and len(bad) >= min(ACCOUNT_BAD_IPS, len(ips)):
+        if len(dead) >= min(ACCOUNT_BAD_IPS, len(ips)):
+            _drop_account(n, f"{len(dead)} IP trả HTTP 407 (user/pass sai?)", _FOREVER)
+        elif len(bad) < len(ips):
+            _drop_account(n, f"{len(bad)} IP cùng lỗi kết nối", QUARANTINE_SECONDS)
+
+
+def _drop_account(n: int, reason: str, seconds: float) -> None:
+    """Bỏ mọi IP của tài khoản Webshare thứ `n` trong `seconds` giây (_FOREVER:
+    cho phần còn lại của bước; bước sau tự thử lại một lần)."""
+    ips = WEBSHARE_ACCOUNTS[n - 1]
+    with _bad_lock:
+        if n in _accounts_off:
+            return
+        until = time.monotonic() + seconds
+        for p in ips:
+            _bad_until[p] = max(_bad_until.get(p, 0.0), until)
+        if seconds == _FOREVER:
+            _accounts_off.add(n)
+        left = len(WEBSHARE_ACCOUNTS) - len(_accounts_off)
+    how = "cho phần còn lại của bước" if seconds == _FOREVER else f"{seconds / 60:g} phút"
+    print(f"[proxy] Webshare tk{n}: {reason}: bỏ cả {len(ips)} IP của tài khoản này {how} "
+          f"(request đi đường khác; không tính là arXiv từ chối)", flush=True)
+    if seconds == _FOREVER and not left and PROXY_LARGE_FILES:
+        print("[proxy] Mọi tài khoản Webshare đều đã bỏ: file lớn đi Colab/WARP như trước", flush=True)
 
 
 # Routes refused by arXiv (HTTP 429, or 503 on several files): skipped by ProxyPool until
@@ -178,16 +309,33 @@ _route_next_cooldown: dict[str, float] = {}
 def _route_name(route: str) -> str:
     if not route:
         return "Colab"
+    if route == AWS_ROUTE:
+        return "AWS"
     if route.endswith(f"{WARP_HOST}:{WARP_PORT}"):
         return "WARP"
+    if route in _ACCOUNT_OF:
+        return f"Webshare tk{_ACCOUNT_OF[route]} {_mask(route)}"
     return _mask(route)
+
+
+def _routes_for(url: str) -> list[str]:
+    """Routes that can carry `url`: Colab/WARP for source files (plus the
+    Webshare proxies for a file over 10 MB, see _is_large), every proxy for
+    API calls, plus AWS when it can carry this URL."""
+    if _is_source(url):
+        routes = list(_LARGE_FILE_LIST if _is_large(url) else _UNLIMITED_LIST)
+    else:
+        routes = list(PROXIES)
+    if _aws_serves(url):
+        routes.append(AWS_ROUTE)
+    return routes
 
 
 def _pause_route(route: str, url: str, retry_after: float) -> float | None:
     """Pause `route` alone when another route that serves `url` is not
     paused; returns the pause in seconds (0 when it was already paused), or
     None when no route would be left (the caller then pauses every request)."""
-    routes = _UNLIMITED_LIST if _is_source(url) else PROXIES
+    routes = _routes_for(url)
     with _bad_lock:
         now = time.monotonic()
         others = [r for r in routes if r != route and _route_paused_until.get(r, 0.0) <= now
@@ -212,6 +360,117 @@ def _route_served(route: str) -> None:
 
 def _is_source(url: str) -> bool:
     return "/src/" in url or "/pdf/" in url or "/e-print/" in url
+
+
+_large_urls: set[str] = set()  # file AWS trả "quá 10 MB" trong tiến trình này
+
+
+def _is_large(url: str) -> bool:
+    """File lớn đi vòng xoay có Webshare: chỉ khi bật ARXIV_PROXY_LARGE_FILES,
+    có proxy, và AWS đã báo file này quá 10 MB (AWS là nơi biết cỡ file trước
+    khi tải: không có AWS thì mọi file đi Colab/WARP như cũ)."""
+    return PROXY_LARGE_FILES and url in _large_urls and len(_LARGE_FILE_LIST) > len(_UNLIMITED_LIST)
+
+
+# ---- AWS route state (one crawler process) ----
+_aws_lock = threading.Lock()
+_aws_skip: set[str] = set()  # URLs AWS could not carry (over 10 MB...): other routes from now on
+_aws_strikes = 0             # failures of AWS itself in a row (not answers of arXiv)
+_aws_fallbacks = 0           # requests sent again through another route
+_aws_blocked = 0             # arXiv answered 403 through AWS while another route got the file
+_aws_off = ""                # why AWS was turned off for the rest of this process
+
+
+def _aws_serves(url: str) -> bool:
+    """AWS can carry `url` (pauses aside): gateways running, export.arxiv.org,
+    a source file only with ARXIV_AWS_FILES, and not a URL AWS failed before."""
+    if not _gateway or _aws_off:
+        return False
+    if (urlsplit(url).hostname or "") != AWS_HOST:
+        return False
+    if _is_source(url) and not AWS_FILES:
+        return False
+    return url not in _aws_skip
+
+
+def _aws_usable(url: str) -> bool:
+    """_aws_serves() and the AWS route is neither paused (arXiv refused it)
+    nor quarantined (AWS itself kept failing)."""
+    if not _aws_serves(url):
+        return False
+    now = time.monotonic()
+    return _route_paused_until.get(AWS_ROUTE, 0.0) <= now and _bad_until.get(AWS_ROUTE, 0.0) <= now
+
+
+def _aws_fallback(url: str, reason: str, own_failure: bool) -> None:
+    """AWS could not carry `url`: it goes through Colab/WARP (or a proxy) from
+    now on. `own_failure`: AWS itself failed (not the 10 MB limit, not an answer
+    of arXiv); AWS_MAX_STRIKES of them in a row skip AWS for 5 minutes."""
+    global _aws_strikes, _aws_fallbacks
+    _aws_skip.add(url)
+    with _aws_lock:
+        _aws_fallbacks += 1
+        count = _aws_fallbacks
+        _aws_strikes = _aws_strikes + 1 if own_failure else 0
+        quarantine = _aws_strikes >= AWS_MAX_STRIKES
+        if quarantine:
+            _aws_strikes = 0
+    if count <= 3 or count % 50 == 0:
+        other = ("Colab/WARP/Webshare" if _is_large(url) else "Colab/WARP") if _is_source(url) else "đường khác"
+        print(f"[AWS] {urlsplit(url).path}: {reason}; gửi lại qua {other}"
+              + (f" (lần thứ {count} trong bước này)" if count > 3 else ""), flush=True)
+    ARXIV_EXPORT._log("aws_fallback", reason, 0, ARXIV_EXPORT.paused_seconds, url)
+    if quarantine:
+        _quarantine(AWS_ROUTE, f"{AWS_MAX_STRIKES} lỗi của chính AWS liên tiếp")
+
+
+def _aws_answered() -> None:
+    """arXiv answered through AWS: AWS itself works."""
+    global _aws_strikes
+    if _aws_strikes:
+        with _aws_lock:
+            _aws_strikes = 0
+
+
+def _aws_refused_by_arxiv() -> None:
+    """arXiv answered 403 through AWS but served the same URL through another
+    route: after three times AWS is turned off for the rest of this process."""
+    global _aws_blocked, _aws_off
+    with _aws_lock:
+        _aws_blocked += 1
+        turn_off = _aws_blocked >= 3 and not _aws_off
+        if turn_off:
+            _aws_off = "arXiv trả HTTP 403 cho AWS nhưng vẫn cho Colab/WARP tải"
+    if turn_off:
+        print(f"[AWS] {_aws_off} (3 lần): tắt AWS cho phần còn lại của bước này", flush=True)
+
+
+def _gateway_error(response) -> str:
+    """'' when `response` is arXiv's own answer passed through by API Gateway;
+    otherwise a short description of the error API Gateway made itself (body
+    over 10 MB, integration timeout after 29 s, throttling, deleted gateway...).
+    Those carry x-amzn-ErrorType and/or a JSON {"message": ...} body; arXiv
+    never answers JSON."""
+    kind = response.headers.get("x-amzn-ErrorType", "").split(":")[0]
+    json_body = response.headers.get("Content-Type", "").lower().startswith("application/json")
+    if not kind and not (response.status_code >= 400 and json_body):
+        return ""
+    message = ""
+    if json_body:
+        try:  # a few bytes: reading them does not matter, the response is dropped
+            message = str(response.json().get("message", ""))[:120]
+        except Exception:
+            pass
+    return " ".join(p for p in (f"AWS trả HTTP {response.status_code}", kind, message) if p)
+
+
+def _wait_new_turn(url: str) -> None:
+    """The request AWS could not carry may have reached arXiv, so the request
+    sent again through another route waits for a new turn of the pace first
+    (the caller already holds a connection of the limiter: none is taken)."""
+    if not _is_source(url):
+        ARXIV._wait_turn()
+    ARXIV_EXPORT._wait_turn()
 
 
 def _has_explicit_proxy(proxies) -> bool:
@@ -259,8 +518,8 @@ class ProxyPool:
                     continue
                 if not proxy or _bad_until.get(proxy, 0.0) <= now:
                     return proxy
-            # mọi đường đang nghỉ: đường hết dừng sớm nhất (cùng lúc thì mạng gốc)
-            return min(self._proxies, key=lambda p: (_route_paused_until.get(p, 0.0), bool(p)))
+            # mọi đường đang nghỉ: đường dùng lại được sớm nhất (cùng lúc thì mạng gốc)
+            return min(self._proxies, key=_free_again_at)
 
     def next_proxies_dict(self) -> dict[str, str] | None:
         """Trả về dict proxies chuẩn cho thư viện requests (chuỗi '' = dùng mạng gốc)."""
@@ -273,6 +532,65 @@ class ProxyPool:
         return bool(self._proxies)
 
 
+def _free_again_at(proxy: str) -> tuple[float, bool]:
+    """Khi nào `proxy` dùng lại được: hết tạm dừng (arXiv từ chối) và hết bị
+    bỏ (lỗi proxy, tài khoản hết dung lượng); mạng gốc không bao giờ bị bỏ."""
+    bad = _bad_until.get(proxy, 0.0) if proxy else 0.0
+    return max(_route_paused_until.get(proxy, 0.0), bad), bool(proxy)
+
+
+class AccountPool:
+    """Xoay vòng hai tầng cho file lớn: lần lượt từng nhóm (Colab, WARP, rồi
+    MỖI TÀI KHOẢN Webshare là một nhóm), trong nhóm thì lần lượt từng IP.
+    Nhờ vậy mỗi tài khoản nhận phần bằng Colab hay WARP (5 tài khoản: mỗi
+    đường 1/7 số file lớn), dung lượng của từng tài khoản dùng đều, và mạng
+    Colab/WARP (không giới hạn dung lượng) vẫn gánh phần của mình. Bỏ qua
+    đường đang tạm dừng và IP/tài khoản đang bị bỏ như ProxyPool."""
+
+    def __init__(self, groups: list[list[str]]):
+        self._groups = [list(g) for g in groups if g]
+        self._all = [p for g in self._groups for p in g]
+        self._g = 0
+        self._i = [0] * len(self._groups)
+        self._lock = threading.Lock()
+
+    def next(self) -> str | None:
+        if not self._all:
+            return None
+        with self._lock:
+            now = time.monotonic()
+            for _ in range(len(self._groups)):
+                g = self._g % len(self._groups)
+                self._g += 1
+                group = self._groups[g]
+                for _ in range(len(group)):
+                    proxy = group[self._i[g] % len(group)]
+                    self._i[g] += 1
+                    if _route_paused_until.get(proxy, 0.0) > now:
+                        continue
+                    if not proxy or _bad_until.get(proxy, 0.0) <= now:
+                        return proxy
+            return min(self._all, key=_free_again_at)
+
+    def __bool__(self) -> bool:
+        return bool(self._all)
+
+
+def _group_accounts(proxies: list[str]) -> list[list[str]]:
+    """Gom proxy theo tài khoản Webshare: các IP của một tài khoản dùng chung
+    user/pass (dạng backbone p.webshare.io thêm -1, -2... vào user). Proxy
+    không có user/pass thì gom theo máy chủ. Giữ thứ tự, bỏ dòng trùng."""
+    accounts: dict[str, list[str]] = {}
+    for p in dict.fromkeys(proxies):
+        parts = urlsplit(p)
+        if parts.username:
+            key = re.sub(r"-(\d+|rotate)$", "", parts.username) + ":" + (parts.password or "")
+        else:
+            key = parts.hostname or p
+        accounts.setdefault(key, []).append(p)
+    return list(accounts.values())
+
+
 # 1. Danh sách không giới hạn dung lượng (Mạng gốc + WARP nếu máy có bật) -> Dùng tải /src/, /pdf/
 _UNLIMITED_LIST: list[str] = [""]
 if _is_warp_running():
@@ -282,11 +600,19 @@ if _is_warp_running():
         print(f'[proxy] WARP đang mở ở {WARP_HOST}:{WARP_PORT} nhưng thiếu PySocks '
               f'(pip install "requests[socks]"): bỏ qua WARP', flush=True)
 
-# 2. Danh sách cho API nhẹ -> Gồm _UNLIMITED_LIST + 10 IP Webshare đọc từ proxies.txt
-PROXIES: list[str] = _UNLIMITED_LIST + _load_external_proxies()
+# 2. Danh sách cho API nhẹ -> Gồm _UNLIMITED_LIST + mọi IP Webshare (ARXIV_PROXIES / proxies.txt)
+_EXTERNAL_PROXIES: list[str] = _load_external_proxies()
+PROXIES: list[str] = _UNLIMITED_LIST + _EXTERNAL_PROXIES
 
 PROXY_POOL = ProxyPool(PROXIES)
 UNLIMITED_POOL = ProxyPool(_UNLIMITED_LIST)
+
+# 3. File > 10 MB (AWS không chở được), khi bật ARXIV_PROXY_LARGE_FILES: Colab + WARP + từng tài khoản
+#    Webshare (5 tài khoản x 10 IP -> 7 nhóm xoay vòng, xem AccountPool).
+WEBSHARE_ACCOUNTS: list[list[str]] = _group_accounts(_EXTERNAL_PROXIES)
+_ACCOUNT_OF: dict[str, int] = {p: n for n, ips in enumerate(WEBSHARE_ACCOUNTS, 1) for p in ips}
+_LARGE_FILE_LIST: list[str] = _UNLIMITED_LIST + [p for ips in WEBSHARE_ACCOUNTS for p in ips]
+LARGE_FILE_POOL = AccountPool([[r] for r in _UNLIMITED_LIST] + WEBSHARE_ACCOUNTS)
 
 
 class ArxivUnavailable(RuntimeError):
@@ -314,8 +640,10 @@ class RateLimiter:
     pauses every request for the cool-down (and, with slow_down=True, switches
     to `slow_interval`); failed() reports a failure that may concern one URL
     only and calls throttled() when two different URLs fail within
-    `isolation_window` seconds; succeeded() ends a run of refusals and brings
-    the normal pace back after `recover_after` successful requests in a row.
+    `isolation_window` seconds; succeeded() ends a run of refusals, halves the
+    next cool-down and brings the normal pace back after `recover_after`
+    successful requests in a row. After a pause only one request starts until
+    it is answered (see the module docstring).
     With the default cooldown=0 these calls do nothing. With `give_up_after`
     > 0, entering the limiter raises ArxivUnavailable once every request has
     been refused for that many seconds.
@@ -367,6 +695,8 @@ class RateLimiter:
         self._successes = 0
         self._refused_since = None  # start of the current run of refusals
         self._gave_up = False
+        self._probe_needed = False  # after a pause: one request first, the others wait for its answer
+        self._probe_thread = None   # the thread whose request is the probe
 
     def __enter__(self):
         self._slots.acquire()  # at most `connections` requests open at once
@@ -387,6 +717,9 @@ class RateLimiter:
     def __exit__(self, exc_type, exc, tb):
         if self.parent is not None:
             self.parent.__exit__(exc_type, exc, tb)
+        if self._probe_thread == threading.get_ident():
+            with self._state:  # no answer that settled it (an error...): the next request is the probe
+                self._probe_thread = None
         self._slots.release()
         return False
 
@@ -406,6 +739,11 @@ class RateLimiter:
                 now = time.monotonic()
                 gap = self.interval + (self.burst_pause if self._in_burst >= self.burst else 0.0)
                 start_at = max(self._last_start + gap, self._paused_until)
+                if start_at <= now and self._probe_needed:
+                    if self._probe_thread is None:
+                        self._probe_thread = threading.get_ident()
+                    else:
+                        start_at = now + 0.05  # the probe is out: wait for its answer
                 if start_at <= now:
                     if self._in_burst >= self.burst or \
                             now - self._last_start >= self.interval + self.burst_pause:
@@ -441,6 +779,7 @@ class RateLimiter:
             if not ongoing:
                 self._next_cooldown = min(self._next_cooldown * 2, self.max_cooldown)
                 self._successes = 0
+                self._probe_needed, self._probe_thread = True, None
                 self._last_failure = None
                 self.throttle_count += 1
                 if self._refused_since is None:
@@ -558,8 +897,8 @@ class RateLimiter:
 
     def succeeded(self, url: str = "") -> None:
         """The server answered normally (for `url`, when given: that file is
-        no longer suspect). After `recover_after` successes in a row the
-        normal pace and the first cool-down length come back."""
+        no longer suspect). Each answer after a pause halves the next cool-down;
+        after `recover_after` successes in a row the normal pace comes back."""
         if not self.cooldown:
             return
         with self._state:
@@ -568,8 +907,18 @@ class RateLimiter:
             if url:
                 self._file_failures.pop(url, None)
                 self._suspects.discard(url)
-            if self.interval == self.min_interval and self._next_cooldown == self.cooldown:
-                return  # already at the normal pace
+            if self._probe_thread == threading.get_ident():
+                self._probe_needed, self._probe_thread = False, None  # arXiv answers: all may go
+            came_back = False
+            if time.monotonic() >= self._paused_until:  # not a request sent before the pause
+                came_back = self._next_cooldown > self.cooldown >= self._next_cooldown / 2
+                self._next_cooldown = max(self._next_cooldown / 2, self.cooldown)
+            if self.interval == self.min_interval:
+                total = self.paused_seconds
+                if came_back:
+                    print(f"[{self.name}] answering again: the next pause would be {self.cooldown:g} s", flush=True)
+                    self._log("recover", "", 0, total, "")
+                return  # the spacing is already normal
             self._successes += 1
             if self._successes < self.recover_after:
                 return
@@ -614,8 +963,15 @@ class RateLimiter:
 
 # Every request sent to arXiv: /src/ downloads directly, API calls through
 # ARXIV. Pace of the bulk data page; refusals pause every arXiv request.
-ARXIV_EXPORT = RateLimiter(min_interval=0.25, burst=4, burst_pause=1.0, connections=6,
-                           cooldown=15.0, max_cooldown=300.0, slow_interval=6.0,
+def _export_connections() -> int:
+    """Downloads open at once: ARXIV_CONNECTIONS, 8 by default, at most 10 (the
+    size of the connection pool of a requests session)."""
+    value = os.environ.get("ARXIV_CONNECTIONS", "")
+    return min(max(int(value), 1), 10) if value.isdigit() else 8
+
+
+ARXIV_EXPORT = RateLimiter(min_interval=0.25, burst=4, burst_pause=1.0, connections=_export_connections(),
+                           cooldown=5.0, max_cooldown=120.0, slow_interval=6.0,
                            recover_after=30, give_up_after=1800.0,
                            isolation_window=120.0, name="arXiv",
                            file_markers=("/src/", "/e-print/"), defer_after=2)
@@ -650,62 +1006,211 @@ def _report_to_arxiv_limiter(response, *args, **kwargs):
 
 
 class _ArxivAdapter(HTTPAdapter):
-    """Transport adapter that also reports to ARXIV_EXPORT when arXiv gives no
-    answer at all (network down, DNS failure, no reply in time). One silent
-    request is retried by its caller; when different URLs keep failing, every
-    request waits for the cool-down instead of failing one after the other. A
-    connection cut while a body is being read is not reported: that error
-    comes later, from reading the body, and downloader.py resumes the file.
+    """Transport adapter: chooses the route of every arXiv request (AWS first
+    when it can carry the URL, otherwise the Colab/WARP rotation for source
+    files and the proxy rotation for API calls) and reports failed connections
+    to ARXIV_EXPORT. Other hosts (Semantic Scholar...) go straight out."""
 
-    Transport adapter tự động xoay vòng proxy theo loại request và báo lỗi kết nối
-    về ARXIV_EXPORT."""
-
-    def __init__(self, proxy_pool: ProxyPool | None = PROXY_POOL, *args, **kwargs):
+    def __init__(self, proxy_pool: ProxyPool | None = PROXY_POOL,
+                 gateway_adapter: HTTPAdapter | None = None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.proxy_pool = proxy_pool
+        self.gateway_adapter = gateway_adapter  # requests_ip_rotator.ApiGateway, or None
 
     def send(self, request, *args, **kwargs):
-        chosen = ""  # proxy dùng cho request này; '' = mạng gốc
-        route = None  # đường của request, để limiter dừng riêng đường bị arXiv từ chối
-        if _is_arxiv(request.url):
-            explicit = kwargs.get("proxies")
-            if _has_explicit_proxy(explicit):
-                route = explicit.get("https") or explicit.get("http") or ""
-            else:
-                if _is_source(request.url):
-                    chosen = UNLIMITED_POOL.next() or ""
-                elif self.proxy_pool:
-                    chosen = self.proxy_pool.next() or ""
-                route = chosen
-            if chosen:
-                kwargs["proxies"] = {"http": chosen, "https": chosen}
+        if not _is_arxiv(request.url):
+            return super().send(request, *args, **kwargs)
+        url = request.url
+        explicit = kwargs.get("proxies")
+        if _has_explicit_proxy(explicit):  # the caller chose the proxy: keep it
+            route = explicit.get("https") or explicit.get("http") or ""
+            return self._send_route(request, route, "", args, kwargs)
 
+        aws_403 = False
+        if self.gateway_adapter is not None and _aws_usable(url):
+            response, aws_403 = self._send_aws(request, args, kwargs)
+            if response is not None:
+                return response
+            _wait_new_turn(url)  # the same request again, through another route
+
+        if _is_source(url):  # file > 10 MB (AWS vừa báo): vòng xoay có Webshare; còn lại Colab/WARP như cũ
+            pool = LARGE_FILE_POOL if _is_large(url) else UNLIMITED_POOL
+        else:
+            pool = self.proxy_pool
+        chosen = (pool.next() if pool else None) or ""
+        if chosen:
+            kwargs["proxies"] = {"http": chosen, "https": chosen}
+        response = self._send_route(request, chosen, chosen, args, kwargs)
+        if aws_403 and response.status_code < 400:
+            _aws_refused_by_arxiv()
+        return response
+
+    def _send_route(self, request, route: str, chosen: str, args, kwargs):
+        """Send through Colab's network or the proxy in kwargs (`chosen`: a
+        proxy of the rotation, quarantined when it cannot connect)."""
         try:
             response = super().send(request, *args, **kwargs)
-            response.arxiv_route = route  # read by _report_to_arxiv_limiter
-            return response
         except (requests.ConnectionError, requests.Timeout) as exc:
-            if chosen:  # proxy/WARP hỏng hoặc hết băng thông: tạm bỏ nó, người gọi thử lại đường khác
-                _quarantine(chosen, f"lỗi kết nối ({type(exc).__name__})")
-            elif _is_arxiv(request.url):
+            if chosen:
+                _proxy_failed(chosen, exc)  # 402/407 của Webshare: bỏ cả tài khoản / IP; còn lại: 5 phút
+            else:
                 ARXIV_EXPORT.failed(request.url, f"no answer ({type(exc).__name__})", route=route)
             raise
+        if chosen in _ACCOUNT_OF and response.status_code in (402, 407):
+            # URL http:// qua proxy: Webshare trả lỗi như một câu trả lời (arXiv không bao giờ trả 402/407).
+            response.close()
+            _proxy_refused(chosen, response.status_code, f"proxy trả HTTP {response.status_code}")
+            raise requests.exceptions.ProxyError(f"proxy trả HTTP {response.status_code}", request=request)
+        response.arxiv_route = route
+        return response
+
+    def _send_aws(self, request, args, kwargs):
+        """Send through AWS API Gateway. Returns (response, False) when arXiv
+        answered through AWS, else (None, arxiv_403) and the caller sends the
+        request through another route. Failures of AWS itself are not arXiv's
+        and are never reported to ARXIV_EXPORT."""
+        url = request.url
+        try:
+            # ApiGateway.send() rewrites the URL and headers it is given: give it a copy.
+            response = self.gateway_adapter.send(request.copy(), *args, **kwargs)
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            _aws_fallback(url, f"AWS không trả lời ({type(exc).__name__})", own_failure=True)
+            return None, False
+        error = _gateway_error(response)
+        if error:
+            response.close()
+            low = error.lower()
+            too_large = response.status_code == 413 or "large" in low or "size" in low
+            if too_large:
+                _large_urls.add(url)  # gửi lại qua vòng xoay file lớn (Colab/WARP + Webshare nếu bật)
+            _aws_fallback(url, error + (" (quá 10 MB)" if too_large else ""), own_failure=not too_large)
+            return None, False
+        _aws_answered()
+        if response.status_code == 403:  # arXiv refuses AWS's address? Ask through Colab/WARP.
+            response.close()
+            _aws_fallback(url, "arXiv trả HTTP 403 qua AWS", own_failure=False)
+            return None, True
+        # Callers, redirects and the response hook see arXiv's URL, not the gateway's.
+        response.url = url
+        response.request = request
+        response.arxiv_route = AWS_ROUTE
+        return response, False
+
+
+_gateway = None  # None: not started yet; False: no AWS in this process; else the ApiGateway
+_gateway_lock = threading.Lock()
+
+
+def _get_api_gateway():
+    """The AWS API Gateways of this process (started once), or None without
+    AWS keys or when they cannot be used (requests then use the other routes)."""
+    global _gateway
+    if _gateway is None:
+        with _gateway_lock:
+            if _gateway is None:
+                _gateway = _start_api_gateway() or False
+    return _gateway or None
+
+
+def _start_api_gateway():
+    access_key = os.environ.get("AWS_ACCESS_KEY_ID")
+    secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
+    if not (access_key and secret_key):
+        return None
+    try:
+        from requests_ip_rotator import ApiGateway
+        gateway = ApiGateway(AWS_SITE, access_key_id=access_key,
+                             access_key_secret=secret_key, verbose=False)
+        # Reuses the gateways the notebook created (Bước 4): one per region, none added.
+        if not gateway.start():
+            raise RuntimeError("không vùng nào có gateway (key thiếu quyền API Gateway?)")
+        gateway.endpoints = _make_binary(gateway.endpoints, access_key, secret_key)
+        if not gateway.endpoints:
+            raise RuntimeError(f"không gateway nào bật được kiểu nhị phân {AWS_BINARY_TYPE}")
+    except Exception as exc:
+        print(f"[proxy] Lỗi khởi động AWS API Gateway: {type(exc).__name__}: {str(exc)[:200]}. "
+              f"Sẽ dùng ProxyPool thay thế.", flush=True)
+        return None
+    what = "API arXiv và file nguồn < 10 MB" if AWS_FILES else "API arXiv (file nguồn: tắt)"
+    print(f"[proxy] Đã khởi động AWS API Gateway thành công: {len(gateway.endpoints)} vùng, "
+          f"{what} đi qua AWS.", flush=True)
+    return gateway
+
+
+def _make_binary(endpoints: list[str], access_key: str, secret_key: str) -> list[str]:
+    """API Gateway (REST) passes a body through unchanged only when the API
+    lists its media type as binary; otherwise a .tar.gz comes out as UTF-8
+    text. Add "*/*" to every gateway that lacks it and redeploy its stage
+    (requests-ip-rotator does not), then return the endpoints that are ready:
+    a gateway that cannot be fixed is not used."""
+    import boto3
+
+    def fix(endpoint: str) -> bool:
+        api_id, _, region = endpoint.split(".")[:3]  # <id>.execute-api.<region>.amazonaws.com
+        client = boto3.session.Session().client(
+            "apigateway", region_name=region,
+            aws_access_key_id=access_key, aws_secret_access_key=secret_key)
+        if AWS_BINARY_TYPE in (client.get_rest_api(restApiId=api_id).get("binaryMediaTypes") or []):
+            return False
+        path = "/binaryMediaTypes/" + AWS_BINARY_TYPE.replace("~", "~0").replace("/", "~1")
+        client.update_rest_api(restApiId=api_id, patchOperations=[{"op": "add", "path": path}])
+        client.create_deployment(restApiId=api_id, stageName="ProxyStage",
+                                 description=f"binary media type {AWS_BINARY_TYPE}")
+        return True
+
+    ready, changed, failed = [], 0, []
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        jobs = [(endpoint, pool.submit(fix, endpoint)) for endpoint in endpoints]
+        for endpoint, job in jobs:
+            try:
+                changed += job.result()
+                ready.append(endpoint)
+            except Exception as exc:
+                failed.append(f"{endpoint.split('.')[2]}: {type(exc).__name__}")
+    if failed:
+        print(f"[proxy] AWS: bỏ {len(failed)} gateway không bật được kiểu nhị phân "
+              f"({'; '.join(failed)[:300]})", flush=True)
+    if changed:
+        print(f"[proxy] AWS: đã bật kiểu nhị phân {AWS_BINARY_TYPE} cho {changed} gateway; "
+              f"chờ 15 s cho cấu hình mới có hiệu lực", flush=True)
+        time.sleep(15)
+    return ready
 
 
 def make_session(user_agent: str = DEFAULT_USER_AGENT,
                  proxy_pool: ProxyPool | None = PROXY_POOL) -> requests.Session:
     """HTTP session that identifies the crawler, as arXiv asks, and reports
     arXiv's answers and failed connections to the shared ARXIV_EXPORT limiter.
-
-    HTTP session tự động gắn User-Agent, xoay vòng proxy qua _ArxivAdapter,
-    và báo trạng thái phản hồi về ARXIV_EXPORT limiter."""
+    With AWS keys in the environment, arXiv requests go through AWS first."""
     session = requests.Session()
     session.headers["User-Agent"] = user_agent
     session.hooks["response"].append(_report_to_arxiv_limiter)
-    adapter = _ArxivAdapter(proxy_pool=proxy_pool)
+    adapter = _ArxivAdapter(proxy_pool=proxy_pool, gateway_adapter=_get_api_gateway())
     session.mount("https://", adapter)
     session.mount("http://", adapter)
+    _announce_large_files()
     return session
+
+
+_announced = False
+
+
+def _announce_large_files() -> None:
+    """In một lần mỗi tiến trình: file > 10 MB đi những đường nào."""
+    global _announced
+    if _announced or not PROXY_LARGE_FILES:
+        return
+    _announced = True
+    if not WEBSHARE_ACCOUNTS:
+        print("[proxy] ARXIV_PROXY_LARGE_FILES bật nhưng không có proxy nào: file lớn đi Colab/WARP", flush=True)
+    elif not _gateway or not AWS_FILES:
+        print("[proxy] ARXIV_PROXY_LARGE_FILES bật nhưng file nguồn không qua AWS (cần DUNG_AWS + AWS_TAI_FILE): "
+              "không biết trước file nào > 10 MB, mọi file đi Colab/WARP như cũ", flush=True)
+    else:
+        sizes = " + ".join(str(len(ips)) for ips in WEBSHARE_ACCOUNTS)
+        names = ", ".join(_route_name(r) for r in _UNLIMITED_LIST)
+        print(f"[proxy] File > 10 MB: xoay vòng {names} và {len(WEBSHARE_ACCOUNTS)} tài khoản Webshare "
+              f"({sizes} IP), mỗi tài khoản một lượt như Colab/WARP; nhịp chung với arXiv không đổi", flush=True)
 
 
 def get_with_retry(session: requests.Session, url: str, *, params=None,

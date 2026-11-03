@@ -194,7 +194,7 @@ def probe(start: str, count: int, out: Path, workers: int) -> int:
     refused = [r for r in rows if r["http_status"] in (429, 503)]
     print(f"\n{len(rows)} requests in {wall:.0f} s = {len(rows) / wall:.2f}/s "
           f"({len(ok)} files, {sum(r['bytes'] for r in ok) / 2**20:.0f} MB); refused by arXiv "
-          f"(429/503): {len(refused)}, each one pausing every request (15 s, then doubled)")
+          f"(429/503): {len(refused)}, each one pausing every request (first {rl.ARXIV_EXPORT.cooldown:g} s, then doubled)")
     print(f"Waiting inside the limiter (free connection + turn + pauses): {describe(wait, ' s')}")
     print(f"Transfer of a file: {describe(transfer, ' s')}")
     for route in sorted({r["route"] for r in rows}):

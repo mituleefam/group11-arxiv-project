@@ -248,10 +248,13 @@ Size reduction from removing figures: `1 - kept_bytes / original_bytes`.
   for harvesting `export.arxiv.org`, "bursts at 4 requests per second with a
   1 second sleep, per burst". `rate_limiter.ARXIV_EXPORT` starts at most 4
   requests 0.25 s apart, then none for 1 s (2 per second on average), with up
-  to 6 downloads open at once (a source file often takes several seconds to
-  arrive), and `downloader.py` works on 6 papers at a time. The API calls
-  count in this pace too, and every HTTP 429 pauses all arXiv requests, except
-  one for a source file that already failed: such a
+  to 8 downloads open at once (a source file often takes several seconds to
+  arrive; `ARXIV_CONNECTIONS` changes it, at most 10), and `downloader.py` works
+  on 2 papers more than that. The API calls count in this pace too, and every
+  HTTP 429 pauses all arXiv requests (5 s, doubled at each new refusal, up to 2
+  minutes; every normal answer halves the next pause, and after a pause one
+  request goes first and the others wait for its answer), except one for a
+  source file that already failed: such a
   file has a problem of its own (arXiv can fail to serve one source for
   hours), so its refusals pause nothing, and after two failures (one, if it
   failed in an earlier pass) it is put aside for a later pass; papers that
