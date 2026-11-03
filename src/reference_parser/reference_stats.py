@@ -76,7 +76,8 @@ def references_of_paper(arxiv_id: str, paper_dir: Path, versions: list[str],
     from pipeline_m2 import VERSION, version_statuses
     statuses = version_statuses(paper_dir)
     names = sorted({v for v in (versions or statuses) if VERSION.fullmatch(v)}, key=lambda v: int(v[1:]))
-    counts: Counter = Counter()
+    # a paper without any TeX version has 0 references, logged as 0 (statistics_m2 needs every paper)
+    counts: Counter = Counter(rows_before_dedup=0)
     by_version, texts = {}, {}
     for v in names:
         g = gather(paper_dir / v, statuses.get(v, "missing"))

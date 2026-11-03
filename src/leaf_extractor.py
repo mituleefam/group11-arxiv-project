@@ -18,9 +18,10 @@ kinds of smallest element:
               works on text that was not).
     sentence  the prose around them, cut by sentence_splitter.split_sentences.
 
-The \\begin and \\end (with its optional argument) of an environment that
+The \\begin and \\end (with its optional arguments) of an environment that
 hierarchy.py reads through (theorem, proof, remark, quote...) are dropped from
-the prose; their text stays. A paragraph holds no section and no list.
+the prose; their text stays, and so do the \\cite, \\ref and \\label written in
+those optional arguments (\\begin{assumption}[LICQ \\citep{a}] keeps \\citep{a}). A paragraph holds no section and no list.
 """
 
 from __future__ import annotations
@@ -43,7 +44,15 @@ FIGURE_ENVS = FLOAT_ENVS | STANDALONE_ENVS
 
 _NAMES = "|".join(re.escape(e) for e in sorted(FIGURE_ENVS, key=len, reverse=True))
 _FIGURE = re.compile(r"\\begin\s*\{(" + _NAMES + r")\}|\\includegraphics\*?(?![A-Za-z@])")
-_ENV_MARK = re.compile(r"\\(begin|end)\s*\{[^{}]+\}(?:\s*\[[^\]\n]*\])?")
+_ENV_MARK = re.compile(r"\\(begin|end)\s*\{[^{}]+\}(?:\s*\[[^\]\n]*\])*")
+_KEPT_IN_OPTIONS = re.compile(r"\\(?:[A-Za-z]*cite[A-Za-z]*|ref|eqref|autoref|cref|Cref|pageref|nameref|label)"
+                              r"\*?(?:\[[^\]]*\])*\{[^{}]*\}")
+
+
+def _env_mark(m: re.Match) -> str:
+    """What stays of an environment's \\begin / \\end: the \\cite, \\ref and \\label of its options."""
+    kept = _KEPT_IN_OPTIONS.findall(m.group(0))
+    return f" {' '.join(kept)} " if kept else " "
 
 
 def _figure_spans(text: str, skip: list) -> list[tuple[int, int]]:
@@ -76,10 +85,10 @@ def _prose(text: str) -> list[str]:
     the environments read through (never inside a formula: $\\begin{array}...$)."""
     out, pos = [], 0
     for span in math_spans(text, literals=True):
-        out.append(_ENV_MARK.sub(" ", text[pos:span.start]))
+        out.append(_ENV_MARK.sub(_env_mark, text[pos:span.start]))
         out.append(text[span.start:span.end])
         pos = span.end
-    out.append(_ENV_MARK.sub(" ", text[pos:]))
+    out.append(_ENV_MARK.sub(_env_mark, text[pos:]))
     return split_sentences("".join(out))
 
 
