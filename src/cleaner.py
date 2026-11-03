@@ -14,6 +14,8 @@ statement asks (\\centering, the [htpb] placement option, \\midrule...):
         size, font    \\small \\footnotesize \\large ... \\bfseries \\itshape \\bf \\it ...
         lengths       \\setlength \\addtolength \\linespread \\fontsize ...
         colour        \\color \\rowcolor \\cellcolor ...
+        settings      \\hypersetup \\graphicspath \\setcounter \\pagenumbering \\lstset ...
+                      (written after \\begin{document} they would otherwise become sentences)
     unwrapped (the text is kept)
         \\textbf{x} \\emph{x} \\textit{x} \\underline{x} \\mbox{x} \\textcolor{c}{x}
         \\resizebox{w}{h}{x} \\scalebox{s}{x} ... and {\\bf x}, {\\em x}
@@ -48,7 +50,7 @@ SPACING = {"noindent", "indent", "smallskip", "medskip", "bigskip", "vfill", "hf
            "allowbreak", "unskip", "relax"}
 PAGE = {"newpage", "clearpage", "cleardoublepage", "pagebreak", "nopagebreak", "FloatBarrier",
         "flushbottom", "raggedbottom", "onecolumn", "balance", "tableofcontents", "listoffigures",
-        "listoftables", "newline", "linebreak"}
+        "listoftables", "newline", "linebreak", "linenumbers", "nolinenumbers"}
 RULES = {"hline", "toprule", "midrule", "bottomrule", "hdashline", "Xhline", "endhead", "endfirsthead",
          "endfoot", "endlastfoot", "tabularnewline"}
 SIZES = {"tiny", "scriptsize", "footnotesize", "small", "normalsize", "large", "Large", "LARGE", "huge",
@@ -64,7 +66,9 @@ DROP_ARGS = {"vspace": (0, 1), "hspace": (0, 1), "addvspace": (0, 1), "enlargeth
              "pagestyle": (0, 1), "thispagestyle": (0, 1), "captionsetup": (1, 1), "color": (1, 1),
              "rowcolor": (1, 1), "cellcolor": (1, 1), "columncolor": (1, 1), "arrayrulecolor": (1, 1),
              "rule": (1, 2), "cline": (0, 1), "cmidrule": (1, 1), "addlinespace": (1, 0),
-             "specialrule": (0, 3), "rowcolors": (1, 3), "vspace*": (0, 1), "hspace*": (0, 1)}
+             "specialrule": (0, 3), "rowcolors": (1, 3), "vspace*": (0, 1), "hspace*": (0, 1),
+             "hypersetup": (0, 1), "graphicspath": (0, 1), "setcounter": (0, 2), "addtocounter": (0, 2),
+             "pagenumbering": (0, 1), "urlstyle": (0, 1), "lstset": (0, 1), "sisetup": (0, 1)}
 # command -> (optional arguments, brace arguments before the kept one)
 UNWRAP = {"textbf": (0, 0), "textit": (0, 0), "emph": (0, 0), "texttt": (0, 0), "textsc": (0, 0),
           "textrm": (0, 0), "textsf": (0, 0), "textsl": (0, 0), "textup": (0, 0), "textmd": (0, 0),

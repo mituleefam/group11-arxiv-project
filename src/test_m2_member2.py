@@ -48,6 +48,16 @@ class CleanerTest(unittest.TestCase):
         for source, expected in cases.items():
             self.assertEqual(clean(source).strip(), expected, source)
 
+    def test_settings_written_in_the_body(self):
+        text = ("\\hypersetup{ colorlinks, linkcolor=black, urlcolor={blue!80!black} }\n"
+                "\\setcounter{page}{1}\\pagenumbering{arabic}\\graphicspath{{fig/}}\\linenumbers\n"
+                "Real text stays.")
+        out = clean(text)
+        for gone in ("hypersetup", "colorlinks", "setcounter", "pagenumbering", "graphicspath", "linenumbers"):
+            self.assertNotIn(gone, out)
+        self.assertIn("Real text stays.", out)
+        self.assertEqual(extract_leaves(normalize(out)), [("sentence", "Real text stays.")])
+
     def test_font_commands_keep_their_text(self):
         self.assertEqual(clean("\\textbf{bold \\emph{nested}} word"), "bold nested word")
         self.assertEqual(clean("an {\\bf old} and {\\em style}"), "an old and style")
