@@ -247,9 +247,27 @@ class HardSourceTest(unittest.TestCase):
         self.assertEqual([c for _, c in kids[root]], ["Abstract", "One"])
         self.assertIn(("sentence", "D."), kids[ids["One"]])
 
-    def test_item_without_list_names_the_environment(self):
-        _, _, tree = tree_of("\\section{A}\n\\begin{tasks}\\item One.\\end{tasks}")
-        self.assertIn("\\item in tasks, not a known list", tree.problems)
+    def test_lists_seen_in_real_sources(self):
+        for body in ("\\begin{highlights}\\item One.\\item Two.\\end{highlights}",
+                     "\\begin{itemizep}[x]\\item One.\\item Two.\\end{itemizep}"):
+            reg, root, tree = tree_of("\\section{A}\n" + body)
+            assert_tree(self, reg, root, tree)
+            kinds = [r["kind"] for r in reg.rows()]
+            self.assertEqual((kinds.count("list"), kinds.count("item"), tree.problems), (1, 2, []), body)
+        reg, root, tree = tree_of("\\section{A}\n\\bi\\item One.\\item Two.\\ei\nAfter.",
+                                  preamble="\\documentclass{a}\\newcommand{\\bi}{\\begin{itemize}}\\def\\ei{\\end{itemize}}")
+        kinds = [r["kind"] for r in reg.rows()]
+        self.assertEqual((kinds.count("list"), kinds.count("item"), tree.problems), (1, 2, []))
+        reg, root, tree = tree_of("\\begin{theorem}\\begin{itemize}\\item One.\\end{itemize}\\end{theorem}")
+        self.assertEqual([r["kind"] for r in reg.rows()].count("list"), 1)
+        _, _, tree = tree_of("\\section{A}\n\\item One.")
+        self.assertIn("\\item in no list, not a list", tree.problems)
+
+    def test_system_files_are_not_missing(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        (tmp / "m.tex").write_text(DOC % "\\input{glyphtounicode}\\input{mathrsfs.sty}\\input{gone}", encoding="utf-8")
+        self.assertEqual(gather(tmp).missing, ["gone"])
 
     def test_root_is_what_includes_the_documentclass(self):
         g = self.gather({"main.tex": "\\input{header}\n\\begin{document}\nA.\n\\end{document}",

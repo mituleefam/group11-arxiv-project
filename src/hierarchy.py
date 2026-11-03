@@ -33,9 +33,11 @@ bibliography (thebibliography and its variants, \\bibliography,
 Bibliography with all it holds, front matter commands (\\title, \\author,
 \\maketitle...) and keyword environments, and macro definitions in the body
 (\\newcommand{\\foo}{\\section{X}} is no section). A section command renamed by
-a macro in the document (\\newcommand{\\sect}[1]{\\section{#1}}) is read as itself;
-other macros are not expanded. tree.problems says when a document has no
-heading or an \\item outside a known list, which usually means such macros.
+a macro in the document (\\newcommand{\\sect}[1]{\\section{#1}}) is read as itself,
+and so is a macro for a list (\\newcommand{\\bi}{\\begin{itemize}}); other macros
+are not expanded. An environment that directly holds an \\item is a list, whatever
+its name (highlights, an author's own). tree.problems says when a document has
+no heading or an \\item outside any environment.
 
 Kept whole, never cut by a blank line nor searched for structure: floats
 (figure, table, algorithm...), display math (equation, align, \\[ \\], $$ $$
@@ -110,6 +112,9 @@ _BRACKET_END = re.compile(r"\\\]|" + _SECTIONING + r"|\\.", re.S)
 _DOUBLE_END = re.compile(r"\$\$|" + _SECTIONING + r"|\\.", re.S)
 _SINGLE_END = re.compile(r"\$|\n[ \t]*\n|\\.", re.S)
 _SECTION_CMD = re.compile(_SECTIONING)
+_LIST_SCAN = re.compile(r"\\(begin|end)\s*\{([^{}]+)\}|\\item(?![A-Za-z@])")
+_LIST_ALIAS = re.compile(r"\\(?:(?:new|renew|provide)command\*?\s*\{?\\([A-Za-z@]+)\}?|[gex]?def\s*\\([A-Za-z@]+))\s*"
+                         r"\{\s*(\\(?:begin|end)\s*\{([^{}]+)\})\s*\}")
 _NAME = re.compile(r"\s*(?:\\[A-Za-z@]+|\\.)")
 _ALIAS = re.compile(r"\\(?:(?:new|renew|provide)command\*?\s*\{?\\([A-Za-z@]+)\}?|[gex]?def\s*\\([A-Za-z@]+))\s*"
                     r"(?:\[1\]|#1)?\s*\{\s*\\(part|chapter|section|subsection|subsubsection|paragraph|subparagraph)"
@@ -453,7 +458,7 @@ class _Builder:
                 return True
         if not self.item_reported:
             self.item_reported = True
-            self.tree.problems.append(f"\\item in {self.last_env or 'no list'}, not a known list")
+            self.tree.problems.append(f"\\item in {self.last_env or 'no list'}, not a list")
         return False
 
 
@@ -477,10 +482,30 @@ def rename_section_macros(text: str, body: str) -> str:
         name = new or old
         if name not in SECTION_LEVELS:
             aliases.setdefault(name, f"\\{command}{star}")
+    for new, old, command, env in _LIST_ALIAS.findall(text):
+        if env.strip() in LIST_ENVS:
+            aliases.setdefault(new or old, command)
     if not aliases:
         return body
     pattern = r"\\(" + "|".join(re.escape(a) for a in sorted(aliases, key=len, reverse=True)) + r")(?![A-Za-z@])"
     return re.sub(pattern, lambda m: aliases[m.group(1)], body)
+
+
+def custom_lists(masked: str) -> set[str]:
+    """Environments that directly hold an \\item while no known list is open."""
+    found: set[str] = set()
+    stack: list[str] = []
+    for m in _LIST_SCAN.finditer(masked):
+        if m.group(1) == "begin":
+            stack.append(m.group(2).strip())
+        elif m.group(1):
+            env = m.group(2).strip()
+            if env in stack:
+                del stack[len(stack) - 1 - stack[::-1].index(env):]
+        elif stack and stack[-1] not in SECTION_ENVS and stack[-1] not in APPENDIX_ENVS \
+                and not any(env in LIST_ENVS or env in found for env in stack):
+            found.add(stack[-1])
+    return found
 
 
 def build(text: str, root_id: str, registry, extract_leaves) -> Tree:
@@ -488,6 +513,7 @@ def build(text: str, root_id: str, registry, extract_leaves) -> Tree:
     module docstring). `registry` and `extract_leaves` follow m2_contract."""
     text = text.replace("\r\n", "\n").replace("\x00", "")  # \x00 marks the blocks
     masked, blocks = mask(remove_bibliography(rename_section_macros(text, document_body(text))))
+    lists = LIST_ENVS | custom_lists(masked)
     b = _Builder(root_id, registry, extract_leaves, blocks)
     pos = 0
     for m in _STRUCT.finditer(masked):
@@ -514,7 +540,7 @@ def build(text: str, root_id: str, registry, extract_leaves) -> Tree:
             if env in APPENDIX_ENVS:
                 if begin:
                     b.start_appendix()
-            elif env in LIST_ENVS:
+            elif env in lists:
                 if begin:  # a list's own arguments: \begin{enumerate}[(a)], \begin{list}{label}{style}
                     pos = _skip_arguments(masked, pos, 2 if env == "list" else 0)
                 b.list_env(env, begin)

@@ -92,6 +92,8 @@ _TEXT_MACRO = re.compile(r"\\(?:(?:new|renew|provide)command\*?\s*\{?\\([A-Za-z@
                          r"\s*\{([^{}#\\\n]*)\}")
 _MACRO_USE = re.compile(r"\\([A-Za-z@]+)\s*(?:\{\})?")
 NAME_LIMIT, CODE_LIMIT = 2000, 200_000  # how far an argument is looked for
+# Files of the TeX installation or that hold no text of the paper: not a missing part of it
+SYSTEM_INPUTS = (".sty", ".cls", ".clo", ".def", ".cfg", ".fd", "glyphtounicode", "glyphtounicode.tex")
 TWO_ARGUMENTS = {"import", "subimport", "inputfrom", "includefrom", "subinputfrom", "subincludefrom"}
 BIB_COMMANDS = {"bibliography", "nobibliography", "addbibresource", "addglobalbib", "addsectionbib"}
 
@@ -344,6 +346,8 @@ class _Gatherer:
                         self.result.bbl_input = True
                     elif "#" in name or "\\" in name:  # \input{#1} in a macro, \input{\dir/x}
                         self.result.problems.append(f"{rel}: \\{inc.cmd}{{{name}}} names a macro, not read")
+                    elif name.strip().lower().endswith(SYSTEM_INPUTS):
+                        pass
                     elif name not in self.result.missing:
                         self.result.missing.append(name)
                     continue
