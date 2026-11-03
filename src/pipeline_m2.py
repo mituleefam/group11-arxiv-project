@@ -69,7 +69,8 @@ from hierarchy import build
 from m2_contract import BIBTEX_FIELDS, ELEMENT_FIELDS
 
 SRC = Path(__file__).resolve().parent
-OWN_MODULES = ("latex_scan", "gatherer", "hierarchy", "m2_contract", "pipeline_m2")
+OWN_MODULES = ("latex_scan", "gatherer", "hierarchy", "m2_contract", "pipeline_m2",
+               "sentence_splitter")  # a helper of leaf_extractor (Member 2), not a contract slot
 KINDS = ("heading", "paragraph", "list", "item", "sentence", "formula", "figure")
 PARSE_LOG_FIELDS = (["time", "arxiv_id", "status", "versions", "versions_with_tex", "elements",
                      "edges", "bibtex"] + list(KINDS)
