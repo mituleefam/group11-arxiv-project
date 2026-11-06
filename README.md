@@ -213,7 +213,9 @@ lost if a run stops). Times are UTC ISO 8601, durations in seconds, sizes in byt
 | `kept_bytes`                                           | Total size of the kept `.tex`/`.bib` files (uncompressed, same basis as `original_bytes`).                          |
 | `kept_files`, `tex_files`, `bib_files`                 | Number of kept files, of which `.tex` and `.bib`.                                                                   |
 | `skipped_files`                                        | `.tex`/`.bib` members not written (unsafe path, link, name refused by the file system); details in `versions.json`. |
-| `error`                                                | Empty on success.                                                                                                   |
+| `error`                                                | Empty on success. HTTP errors name the route of the answer, e.g. `HTTP 500 via WARP`.                               |
+| `route`                                                | Route of the last answer: `Colab`, `WARP`, `AWS` or a masked proxy.                                                 |
+| `first_error`                                          | First error of the download when it differs from `error` (e.g. why a body was cut off before a retry succeeded).   |
 
 Size reduction from removing figures: `1 - kept_bytes / original_bytes`.
 

@@ -58,6 +58,12 @@ from extractor import CorruptSourceError, IncompleteSourceError, extract_source
 from rate_limiter import (ARXIV_EXPORT, RETRY_STATUS, RateLimiter, _retry_after_seconds,
                           make_session)
 
+try:  # name of the route of an answer ("Colab", "WARP", "AWS", masked proxy)
+    from rate_limiter import _route_name
+except ImportError:  # an older rate_limiter.py without routes
+    def _route_name(route: str) -> str:
+        return route or "Colab"
+
 SRC_URL = "https://export.arxiv.org/src/{versioned_id}"
 
 CONNECT_TIMEOUT = 15   # seconds to open the connection
@@ -67,6 +73,11 @@ MAX_HTTP_ATTEMPTS = 5  # per download: failed requests in a row with no new byte
 FIRST_BACKOFF = 3.0    # seconds before the first retry, doubled after each one
 MAX_REQUESTS = 30      # per download, counting the requests that resumed a broken body
 MAX_DOWNLOADS = 3      # per version and run: downloads of a body that turned out cut off
+# HTTP 500, 502 and 504 are not reported to the limiter by the response hook of
+# rate_limiter.py (it handles 429 and 503), so fetch_source reports them itself.
+SERVER_ERRORS = (500, 502, 504)
+MAX_RESTARTS = 1       # per download: whole-file restarts after arXiv refused to resume a cut body
+RANGE_GIVE_UP = 3      # resumes refused (and none served) before no file asks for one in this process
 # Stop the stage when this many versions in a row fail (in the order they
 # finish): arXiv is probably blocking us (403) or unreachable, and going on
 # would only add failures.
@@ -78,7 +89,38 @@ DOWNLOAD_LOG_FIELDS = [
     "attempts", "download_seconds", "extract_seconds", "total_seconds",
     "downloaded_bytes", "original_bytes", "image_bytes", "kept_bytes",
     "kept_files", "tex_files", "bib_files", "skipped_files", "error",
+    "route", "first_error",
 ]
+
+
+class _ResumeStats:
+    """Does arXiv serve the missing part of a cut body (HTTP 206 to a Range
+    request)? Shared by every download of this process: once RANGE_GIVE_UP
+    resumes were refused with HTTP 5xx and none was served, a cut body is
+    downloaded again from zero at once, without a Range request that would
+    only get another error."""
+
+    def __init__(self) -> None:
+        self.refused = 0
+        self.served = 0
+        self._lock = threading.Lock()
+
+    def note(self, served: bool) -> None:
+        with self._lock:
+            if served:
+                self.served += 1
+                return
+            self.refused += 1
+            announce = self.refused == RANGE_GIVE_UP and not self.served
+        if announce:
+            print(f"[download] arXiv refused {RANGE_GIVE_UP} resumed downloads (HTTP Range) and "
+                  f"served none: a cut-off file is downloaded again from zero from now on", flush=True)
+
+    def worth_trying(self) -> bool:
+        return self.served > 0 or self.refused < RANGE_GIVE_UP
+
+
+RESUME = _ResumeStats()
 
 
 @dataclass
@@ -93,6 +135,8 @@ class Download:
     error         "" when ok, otherwise what went wrong
     deferred      True when the file was put aside for a later pass because
                   it kept failing while arXiv answered other requests
+    route         route of the last answer ("Colab", "WARP", "AWS"...; "" if none)
+    first_error   first error of this download, when it differs from `error`
     """
 
     ok: bool
@@ -102,6 +146,8 @@ class Download:
     seconds: float
     error: str = ""
     deferred: bool = False
+    route: str = ""
+    first_error: str = ""
 
 
 def _content_range_start_total(header: str | None) -> tuple[int | None, int | None]:
@@ -139,7 +185,13 @@ def fetch_source(session: requests.Session, versioned_id: str, target: Path, *,
     changed on the server in between, the server sends the whole new file
     (HTTP 200) and the download restarts from zero. A server that ignores
     Range also answers 200, which simply restarts the download. Each of
-    these requests goes through the limiter like any other.
+    these requests goes through the limiter like any other. A resume answered
+    with HTTP 500, 502 or 504 is not asked again (the 05/11 crawl: five
+    refusals in a row on the same file, 400-711 s per file): the partial body
+    is dropped and the whole file is asked again, at most MAX_RESTARTS times;
+    a file cut off again after that is put aside for a later pass. Once
+    RANGE_GIVE_UP resumes were refused and none was served, no download of
+    this process asks for a resume any more (see _ResumeStats).
 
     Retries: network errors, a body shorter than its Content-Length, HTTP 429
     and 5xx are retried with a doubling backoff (or the server's Retry-After).
@@ -149,6 +201,10 @@ def fetch_source(session: requests.Session, versioned_id: str, target: Path, *,
     that keeps failing on its own while arXiv answers other requests
     (limiter.should_defer, see rate_limiter.py) is not asked for again: it is
     returned as failed with deferred=True and tried again in a later pass.
+    HTTP 500, 502 and 504 to a request for the whole file are reported to the
+    limiter like a 503 (limiter.failed), so the same rules apply to them: a
+    file that keeps failing is put aside, and failures of several files close
+    together pause every request.
     """
     url = SRC_URL.format(versioned_id=versioned_id)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -160,12 +216,30 @@ def fetch_source(session: requests.Session, versioned_id: str, target: Path, *,
     total: int | None = None      # full size of the file, once known
     validator: str | None = None  # ETag or Last-Modified of the first answer
     requests_made, without_progress = 0, 0
+    resume_ok = True              # False once arXiv refused to resume this file
+    restarts = 0                  # whole-file restarts after a cut body could not be resumed
+    first_error, route = "", None
+
+    def result(ok: bool, deferred: bool = False) -> Download:
+        return Download(ok, status, size, requests_made, round(time.perf_counter() - started, 3),
+                        error, deferred, _route_name(route) if route is not None else "",
+                        first_error if first_error != error else "")
 
     while requests_made < MAX_REQUESTS and without_progress < max_attempts:
+        if size > 0 and not (resume_ok and RESUME.worth_trying()):
+            # A cut body that will not be resumed: the whole file again, or put it aside.
+            if restarts >= MAX_RESTARTS:
+                error = (f"{error or 'body cut off'}; cut off again after a restart from zero "
+                         f"(arXiv does not resume it): put aside for a later pass")
+                limiter.deferred(url, error)
+                return result(False, deferred=True)
+            restarts += 1
+            size, total, validator = 0, None, None
         requests_made += 1
         retry_after, before, error, status = 0.0, size, "", None
+        ranged = size > 0
         headers = {}
-        if size > 0:
+        if ranged:
             headers["Range"] = f"bytes={size}-"
             if validator:
                 headers["If-Range"] = validator
@@ -174,6 +248,7 @@ def fetch_source(session: requests.Session, versioned_id: str, target: Path, *,
                 with session.get(url, stream=True, headers=headers,
                                  timeout=(CONNECT_TIMEOUT, READ_TIMEOUT)) as response:
                     status = response.status_code
+                    route = getattr(response, "arxiv_route", route)
                     retry_after = _retry_after_seconds(response)
                     mode = None
                     if status == 200:  # whole file (first request, or Range not honoured)
@@ -186,6 +261,7 @@ def fetch_source(session: requests.Session, versioned_id: str, target: Path, *,
                         if first == size:
                             mode = "ab"
                             total = full if full is not None else total
+                            RESUME.note(served=True)
                         else:
                             error = f"unexpected Content-Range {response.headers.get('Content-Range')!r}"
                     elif status == 416:  # range not satisfiable: start again from zero
@@ -210,12 +286,20 @@ def fetch_source(session: requests.Session, versioned_id: str, target: Path, *,
             elif size == 0:
                 error = "empty body"
             else:
-                return Download(True, status, size, requests_made,
-                                round(time.perf_counter() - started, 3))
+                return result(True)  # first_error, if any, tells why an earlier request broke
+        if route is not None and status is not None and error.startswith("HTTP "):
+            error += f" via {_route_name(route)}"
+        first_error = first_error or error
         if status == 416 or error.startswith("unexpected Content-Range"):
             size, total, validator = 0, None, None  # resuming failed: next request from zero
         if status is not None and status not in (200, 206, 416) and status not in RETRY_STATUS:
             break  # 404, 403...: a new request would get the same answer
+        if status in SERVER_ERRORS:
+            if ranged:  # arXiv will not send the missing part: the whole file next time
+                resume_ok = False
+                RESUME.note(served=False)
+            else:       # the whole file refused: counted like a 503 (put aside after 2)
+                limiter.failed(url, f"HTTP {status}", retry_after, route=route)
         if size > before:
             without_progress, backoff = 0, FIRST_BACKOFF  # progress: resume right away
             continue
@@ -223,14 +307,12 @@ def fetch_source(session: requests.Session, versioned_id: str, target: Path, *,
         if limiter.should_defer(url):
             error += "; put aside for a later pass (this file keeps failing, other files download)"
             limiter.deferred(url, error)
-            return Download(False, status, size, requests_made,
-                            round(time.perf_counter() - started, 3), error, deferred=True)
+            return result(False, deferred=True)
         if without_progress < max_attempts:
             time.sleep(max(backoff, retry_after))
             backoff *= 2
 
-    return Download(False, status, size, requests_made,
-                    round(time.perf_counter() - started, 3), error)
+    return result(False)
 
 
 def _remove(path: Path) -> None:
@@ -272,6 +354,7 @@ def process_version(paper: dict, version: str, layout: DataLayout, session: requ
               "downloaded_bytes": 0, "original_bytes": 0, "image_bytes": 0, "kept_bytes": 0,
               "kept_files": [], "skipped": [], "download_seconds": 0.0,
               "extract_seconds": 0.0, "error": ""}
+    route, first_error = "", ""  # for the log row only (not saved in versions.json)
 
     try:
         for _ in range(MAX_DOWNLOADS):
@@ -279,6 +362,8 @@ def process_version(paper: dict, version: str, layout: DataLayout, session: requ
             record["attempts"] += download.attempts
             record["download_seconds"] = round(record["download_seconds"] + download.seconds, 3)
             record.update(http_status=download.http_status, downloaded_bytes=download.size)
+            route = download.route or route
+            first_error = first_error or download.first_error
             if not download.ok:
                 record["status"] = NOT_FOUND if download.http_status == 404 else FAILED
                 record["error"] = download.error
@@ -333,7 +418,8 @@ def process_version(paper: dict, version: str, layout: DataLayout, session: requ
               kept_files=len(record["kept_files"]),
               tex_files=sum(1 for n in record["kept_files"] if n.lower().endswith(".tex")),
               bib_files=sum(1 for n in record["kept_files"] if n.lower().endswith(".bib")),
-              skipped_files=len(record["skipped"]), error=record["error"])
+              skipped_files=len(record["skipped"]), error=record["error"],
+              route=route, first_error=first_error if first_error != record["error"] else "")
     return record
 
 

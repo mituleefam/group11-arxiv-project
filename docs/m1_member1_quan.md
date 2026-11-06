@@ -113,6 +113,17 @@ không module nào tự `sleep` riêng:
 - **File arXiv không trả được trong nhiều giờ** (gặp thật trong lần chạy tháng 10:
   vài phiên bản trả 503/429 hàng giờ liền, mỗi lần làm cả crawler dừng, tổng khoảng
   30 phút): lỗi 2 lần thì **gác lại** để lượt sau tải, không làm dừng file khác.
+- **File lớn bị đứt giữa chừng, arXiv không cho tải tiếp**: log chạy thật 5000 ID
+  ngày 05/11 có các phiên bản `attempts = 6`, đã nhận được một số MiB tròn rồi kết
+  thúc bằng `HTTP 500`, mỗi file 400–711 s: request xin phần còn thiếu (`Range`)
+  bị trả 500 năm lần liền, và 500 không được tính như 503 nên file không được gác
+  lại; phần lớn 1,07 giờ của bước *sweep* là chờ các file này. Từ bản sửa này:
+  tải tiếp bị 500/502/504 thì bỏ phần đã có và tải lại cả file **một lần**, đứt nữa
+  thì gác sang lượt sau; arXiv từ chối `Range` 3 lần mà chưa cho lần nào thì cả lần
+  chạy không xin `Range` nữa (log: `[download] arXiv refused 3 resumed downloads ...`);
+  500/502/504 cho request tải cả file được báo cho bộ giới hạn như 503 (lỗi 2 lần thì
+  gác lại). `download_log.csv` có thêm `route` (đường của câu trả lời cuối) và
+  `first_error` (lỗi đầu tiên, ví dụ vì sao file bị đứt).
 - **Chờ ngắn và thăm dò** (`ddeecb9`): lần chờ đầu 5 s, gấp đôi mỗi lần bị từ chối
   tiếp, tối đa 2 phút; mỗi lần arXiv trả lời bình thường thì lần chờ sau giảm một nửa;
   hết chờ chỉ gửi **1 request thăm dò**, có trả lời bình thường thì các kết nối khác
@@ -219,10 +230,10 @@ IP là thêm đường dự phòng, không phải gửi nhanh hơn. Tất cả n
 | Đường đi | Ai thêm | Dùng cho | Bật bằng |
 | :-- | :-- | :-- | :-- |
 | Mạng của Colab | (mặc định) | Mọi request | Luôn có |
-| **Proxy Webshare** (`ProxyPool`) | Quân, `a1582b5` | Xoay vòng các request gọi **API** arXiv | `DUNG_PROXY` ở Bước 1 + secret `ARXIV_PROXIES` của riêng mỗi người (không ghi trong code, `proxies.txt` không được commit) |
+| **Proxy Webshare** (`ProxyPool`) | Quân, `a1582b5` | Xoay vòng các request gọi **API** arXiv (và file lớn, dòng cuối bảng) | `DUNG_PROXY` ở Bước 1 + secret `ARXIV_PROXIES` của riêng mỗi người (không ghi trong code, `proxies.txt` không được commit) |
 | **Cloudflare WARP** | Quân, notebook `ca0fe44` | Tải **file nguồn**: một IP thứ hai bên cạnh IP của Colab | `DUNG_WARP` ở Bước 1; notebook tự cài `wgcf` + `wireproxy` (cổng SOCKS5 `127.0.0.1:40000`), crawler tự nhận nếu cổng mở |
-| **AWS API Gateway** (`requests-ip-rotator`) | Quân, `ddeecb9` | Request API, và mặc định cả file nguồn, đi qua gateway của tài khoản AWS | Chỉ khi có `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` trong môi trường; thiếu key hoặc thiếu thư viện thì tự tắt |
-| **Nhiều tài khoản Webshare cho file lớn** | Quân, `ddeecb9` | File AWS không chở được (> 10 MB) | `ARXIV_PROXY_LARGE_FILES=1` |
+| **AWS API Gateway** (`requests-ip-rotator`) | Quân, `ddeecb9` | Request API, và mặc định cả file nguồn, đi qua gateway của tài khoản AWS | `DUNG_AWS` (và `AWS_TAI_FILE`) ở Bước 1 + 2 secret `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`; thiếu key, thư viện hoặc gateway thì tự tắt |
+| **Nhiều tài khoản Webshare cho file lớn** | Quân, `ddeecb9` | File AWS không chở được (> 10 MB) | `WEBSHARE_FILE_LON` ở Bước 1 (đặt `ARXIV_PROXY_LARGE_FILES=1`); cần cả AWS và `DUNG_PROXY` |
 
 Các kỹ thuật đi kèm:
 
@@ -251,10 +262,11 @@ Các kỹ thuật đi kèm:
 - **Colab**: FAQ của Colab không cho "connecting to remote proxies". Runtime bị ngắt
   bất thường khi đang bật proxy/WARP thì đặt `DUNG_PROXY`, `DUNG_WARP` thành `False`.
 - **Chi phí**: AWS API Gateway tính phí theo request; Webshare miễn phí có 1 GB/tháng.
-- **Chưa có trên GitHub**: phần notebook để tạo gateway AWS và nạp key AWS
-  (`DUNG_AWS`, `AWS_TAI_FILE` mà code nhắc tới) chưa có trong 2 notebook của repo;
-  `requirements.txt` cũng chưa có `requests-ip-rotator` và `boto3`. Không có những thứ
-  này thì crawler vẫn chạy bình thường, chỉ là không có đường AWS.
+- **Trong notebook của repo**: Bước 1 có `DUNG_AWS`, `AWS_TAI_FILE`, `WEBSHARE_FILE_LON`;
+  Bước 4 nạp 2 key AWS từ *Secrets* và cài `requests-ip-rotator`, `boto3` (không nằm
+  trong `requirements.txt`, chỉ cài khi bật AWS). Phần **tạo gateway** AWS vẫn chưa có
+  trên GitHub. Không có key hay gateway thì crawler vẫn chạy bình thường, chỉ là không
+  có đường AWS.
 
 #### Nếu muốn bật đường AWS: code cần gì và những điều phải giữ
 
@@ -266,13 +278,14 @@ lỗi thì in `[proxy] Lỗi khởi động AWS API Gateway: ...`):
 
 | Cần có | Ở đâu | Ghi chú |
 | :-- | :-- | :-- |
-| Thư viện `requests-ip-rotator` và `boto3` | Cài trên Colab trước khi chạy crawler | Chưa có trong `requirements.txt` |
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Biến môi trường của tiến trình crawler | Lấy từ *Secrets* của Colab, giống `S2_API_KEY` |
+| Thư viện `requests-ip-rotator` và `boto3` | Notebook tự cài ở Bước 4 khi bật `DUNG_AWS` | Không có trong `requirements.txt` |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | *Secrets* của Colab (bật Notebook access) | Bước 4 chuyển vào biến môi trường của crawler; *Secrets* không tự thành biến môi trường |
 | Gateway của tài khoản AWS cho `https://export.arxiv.org` | Tạo trước khi crawl | Bước tạo nằm trong notebook của Quân, **chưa có trên GitHub** |
 
-Các công tắc liên quan: `ARXIV_AWS_FILES=0` để chỉ cho request API đi qua AWS, file
-nguồn đi Colab/WARP (mặc định `1`: cả file nguồn); `ARXIV_PROXY_LARGE_FILES=1` để file
-trên 10 MB đi vòng xoay Webshare thay vì chỉ Colab/WARP.
+Các công tắc liên quan (Bước 1 của notebook đặt chúng): `AWS_TAI_FILE = False` (tức
+`ARXIV_AWS_FILES=0`) để chỉ cho request API đi qua AWS, file nguồn đi Colab/WARP (mặc
+định: cả file nguồn); `WEBSHARE_FILE_LON` (tức `ARXIV_PROXY_LARGE_FILES=1`) để file trên
+10 MB đi vòng xoay Webshare thay vì chỉ Colab/WARP.
 
 Những điều phải giữ khi dùng AWS:
 
@@ -344,6 +357,9 @@ archive" và "those are the only file types the working corpus keeps", nên nhó
 | `KET_NOI` | 8 | Số file tải cùng lúc, tối đa 10; nhịp vẫn 2 request/giây |
 | `DUNG_PROXY` | `True` | Xoay proxy Webshare cho request API (cần secret `ARXIV_PROXIES`) |
 | `DUNG_WARP` | `True` | Notebook tự cài WARP làm IP thứ hai cho việc tải file |
+| `DUNG_AWS` | `True` | Đường AWS API Gateway (cần 2 secret AWS và gateway sẵn có; không có thì tự bỏ qua) |
+| `AWS_TAI_FILE` | `True` | Khi có AWS: file nguồn < 10 MB cũng đi AWS (`False`: chỉ request API) |
+| `WEBSHARE_FILE_LON` | `True` | Khi có AWS và proxy: file AWS báo > 10 MB đi xoay vòng Colab + WARP + từng tài khoản Webshare |
 | `CHAP_NHAN_CON_THIEU` | `False` | `True`: Bước 6 trả mã 4 (còn vài file chưa tải được) vẫn đi tiếp sang Bước 7 |
 | `FILE_MOI` | `github` | Lấy code từ nhánh `BRANCH`, hoặc nạp file `.py` mới chưa push |
 
