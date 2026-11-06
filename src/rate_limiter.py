@@ -96,7 +96,9 @@ total_paused_seconds, since requests went on through the other routes.
 
 AWS (requests-ip-rotator, only when AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
 are set): API calls, and with ARXIV_AWS_FILES=1 (the default) source files
-too, go first through the API Gateways of the account; every request still
+too, go first through the API Gateways of the account, in the regions listed in
+ARXIV_AWS_REGIONS (comma-separated; empty: the library's default list, which
+fails on an account whose organization allows only some regions); every request still
 waits for its turn in the limiters above, so AWS adds a route, not speed.
 API Gateway (REST) buffers an answer and refuses one over 10 MB, so a source
 file over 10 MB, or one AWS fails to carry for any other reason (integration
@@ -183,6 +185,9 @@ AWS_BINARY_TYPE = "*/*"                # binary media type every gateway needs (
 # Source files through AWS too (those over 10 MB fall back to Colab/WARP): ARXIV_AWS_FILES=0 turns it off.
 AWS_FILES = os.environ.get("ARXIV_AWS_FILES", "1").strip().lower() not in ("0", "false", "no", "off")
 AWS_MAX_STRIKES = 5                    # failures of AWS itself in a row before it is skipped for 5 min
+# Regions whose API Gateway may be used, e.g. "ap-southeast-2" (an account of a school's AWS
+# Organization may be denied every other region by a service control policy). Empty: the default list.
+AWS_REGIONS = [r.strip() for r in os.environ.get("ARXIV_AWS_REGIONS", "").split(",") if r.strip()]
 
 # Webshare nhiều tài khoản (xem "Webshare" ở docstring). ARXIV_PROXY_LARGE_FILES=1: file nguồn AWS
 # không chở được vì quá 10 MB đi xoay vòng Colab + WARP + từng tài khoản Webshare. Mặc định tắt: như cũ.
@@ -1119,11 +1124,12 @@ def _start_api_gateway():
         return None
     try:
         from requests_ip_rotator import ApiGateway
+        regions = {"regions": AWS_REGIONS} if AWS_REGIONS else {}
         gateway = ApiGateway(AWS_SITE, access_key_id=access_key,
-                             access_key_secret=secret_key, verbose=False)
-        # Reuses the gateways the notebook created (Bước 4): one per region, none added.
+                             access_key_secret=secret_key, verbose=False, **regions)
+        # start(): in every region, reuses the gateway named after the site, or creates one.
         if not gateway.start():
-            raise RuntimeError("không vùng nào có gateway (key thiếu quyền API Gateway?)")
+            raise RuntimeError("không vùng nào có gateway (key thiếu quyền API Gateway, hoặc vùng bị chặn?)")
         gateway.endpoints = _make_binary(gateway.endpoints, access_key, secret_key)
         if not gateway.endpoints:
             raise RuntimeError(f"không gateway nào bật được kiểu nhị phân {AWS_BINARY_TYPE}")
@@ -1132,7 +1138,8 @@ def _start_api_gateway():
               f"Sẽ dùng ProxyPool thay thế.", flush=True)
         return None
     what = "API arXiv và file nguồn < 10 MB" if AWS_FILES else "API arXiv (file nguồn: tắt)"
-    print(f"[proxy] Đã khởi động AWS API Gateway thành công: {len(gateway.endpoints)} vùng, "
+    print(f"[proxy] Đã khởi động AWS API Gateway thành công: {len(gateway.endpoints)} vùng"
+          + (f" ({', '.join(AWS_REGIONS)})" if AWS_REGIONS else "") + ", "
           f"{what} đi qua AWS.", flush=True)
     return gateway
 

@@ -262,17 +262,20 @@ Các kỹ thuật đi kèm:
 - **Colab**: FAQ của Colab không cho "connecting to remote proxies". Runtime bị ngắt
   bất thường khi đang bật proxy/WARP thì đặt `DUNG_PROXY`, `DUNG_WARP` thành `False`.
 - **Chi phí**: AWS API Gateway tính phí theo request; Webshare miễn phí có 1 GB/tháng.
-- **Trong notebook của repo**: Bước 1 có `DUNG_AWS`, `AWS_TAI_FILE`, `WEBSHARE_FILE_LON`;
-  Bước 4 nạp 2 key AWS từ *Secrets* và cài `requests-ip-rotator`, `boto3` (không nằm
-  trong `requirements.txt`, chỉ cài khi bật AWS). Phần **tạo gateway** AWS vẫn chưa có
-  trên GitHub. Không có key hay gateway thì crawler vẫn chạy bình thường, chỉ là không
-  có đường AWS.
+- **Trong notebook của repo**: Bước 1 có `DUNG_AWS`, `AWS_TAI_FILE`, `AWS_VUNG`,
+  `WEBSHARE_FILE_LON`; Bước 4 nạp 2 key AWS từ *Secrets*, cài `requests-ip-rotator`,
+  `boto3` (không nằm trong `requirements.txt`, chỉ cài khi bật AWS) và thử quyền API
+  Gateway ở từng vùng; gateway thiếu thì `requests-ip-rotator` tự tạo lúc crawler khởi
+  động. Không có key hay quyền thì crawler vẫn chạy bình thường, chỉ là không có đường AWS.
 
 #### Nếu muốn bật đường AWS: code cần gì và những điều phải giữ
 
-Code trong repo **chỉ dùng** gateway đã có sẵn trong tài khoản AWS, nó không tự tạo
-gateway (chú thích trong `_start_api_gateway`: "Reuses the gateways the notebook
-created"). Đường AWS chỉ bật khi có đủ 3 thứ dưới đây; thiếu bất kỳ thứ nào thì
+Ở mỗi vùng trong `AWS_VUNG` (biến `ARXIV_AWS_REGIONS`), `requests-ip-rotator` dùng lại
+gateway có tên `https://export.arxiv.org - IP Rotate API`, chưa có thì tự tạo một cái.
+Tài khoản đăng ký bằng mail trường nằm trong AWS Organization của trường: SCP của
+Organization chặn API Gateway ở mọi vùng trừ `ap-southeast-2` (đo ngày 06/11), nên
+`AWS_VUNG` mặc định là `ap-southeast-2`; để trống thì thư viện dùng danh sách vùng mặc
+định và dừng ở vùng bị chặn đầu tiên. Đường AWS chỉ bật khi có đủ 3 thứ dưới đây; thiếu bất kỳ thứ nào thì
 crawler chạy tiếp như không có AWS (thiếu key thì không in gì; có key mà khởi động
 lỗi thì in `[proxy] Lỗi khởi động AWS API Gateway: ...`):
 
@@ -280,7 +283,7 @@ lỗi thì in `[proxy] Lỗi khởi động AWS API Gateway: ...`):
 | :-- | :-- | :-- |
 | Thư viện `requests-ip-rotator` và `boto3` | Notebook tự cài ở Bước 4 khi bật `DUNG_AWS` | Không có trong `requirements.txt` |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | *Secrets* của Colab (bật Notebook access) | Bước 4 chuyển vào biến môi trường của crawler; *Secrets* không tự thành biến môi trường |
-| Gateway của tài khoản AWS cho `https://export.arxiv.org` | Tạo trước khi crawl | Bước tạo nằm trong notebook của Quân, **chưa có trên GitHub** |
+| Quyền API Gateway ở các vùng `AWS_VUNG` | IAM của user (và SCP của Organization, nếu có) | Bước 4 thử quyền từng vùng và in lý do khi bị chặn |
 
 Các công tắc liên quan (Bước 1 của notebook đặt chúng): `AWS_TAI_FILE = False` (tức
 `ARXIV_AWS_FILES=0`) để chỉ cho request API đi qua AWS, file nguồn đi Colab/WARP (mặc
@@ -359,6 +362,7 @@ archive" và "those are the only file types the working corpus keeps", nên nhó
 | `DUNG_WARP` | `True` | Notebook tự cài WARP làm IP thứ hai cho việc tải file |
 | `DUNG_AWS` | `True` | Đường AWS API Gateway (cần 2 secret AWS và gateway sẵn có; không có thì tự bỏ qua) |
 | `AWS_TAI_FILE` | `True` | Khi có AWS: file nguồn < 10 MB cũng đi AWS (`False`: chỉ request API) |
+| `AWS_VUNG` | `"ap-southeast-2"` | Vùng AWS được dùng, cách nhau bằng dấu phẩy (tài khoản mail trường chỉ được vùng này) |
 | `WEBSHARE_FILE_LON` | `True` | Khi có AWS và proxy: file AWS báo > 10 MB đi xoay vòng Colab + WARP + từng tài khoản Webshare |
 | `CHAP_NHAN_CON_THIEU` | `False` | `True`: Bước 6 trả mã 4 (còn vài file chưa tải được) vẫn đi tiếp sang Bước 7 |
 | `FILE_MOI` | `github` | Lấy code từ nhánh `BRANCH`, hoặc nạp file `.py` mới chưa push |
