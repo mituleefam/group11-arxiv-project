@@ -105,8 +105,13 @@ file over 10 MB, or one AWS fails to carry for any other reason (integration
 timeout after 29 s, gateway deleted, no answer), is sent again at once
 through Colab/WARP after waiting for a new turn of the pace, and that URL
 never goes through AWS again in this process ("aws_fallback" in
-arxiv_throttle_log.csv). API Gateway also turns a binary body into UTF-8 text
-unless the API lists it as binary, so every gateway gets the binary media type
+arxiv_throttle_log.csv). API Gateway refuses an answer over 10 MB with its own
+HTTP 500 "Internal server error", not 413 (5000-ID crawl of 2026-11-06: 610 of
+610 such errors on source files were files of 10-90 MB, while its 504 errors
+were mostly smaller files), so that error on a source file counts as "over
+10 MB": not a failure of AWS itself, and the other versions of the same paper,
+most often as large, skip AWS too. API Gateway also turns a binary body into
+UTF-8 text unless the API lists it as binary, so every gateway gets the binary media type
 "*/*" when the crawler starts (once; then the stage is redeployed). Answers
 of arXiv itself through AWS (200, 404, 429, 503...) are handled like any
 other route; if arXiv answers HTTP 403 through AWS while Colab/WARP get the
@@ -116,9 +121,9 @@ Webshare (several accounts, e.g. 5 free accounts x 10 IPs, all listed in
 ARXIV_PROXIES / proxies.txt): the proxies of one account share its
 user/password (the backbone form adds -1, -2... to the user), which is how
 they are grouped into accounts. API calls use every proxy as before. With
-ARXIV_PROXY_LARGE_FILES=1, a source file AWS refused as over 10 MB is sent
-again through a two-level rotation instead of Colab/WARP alone: Colab,
-WARP, then each account as ONE slot (and its IPs in turn inside it), so
+ARXIV_PROXY_LARGE_FILES=1, a source file AWS refused as over 10 MB (or another
+version of the same paper) is sent through a two-level rotation instead of
+Colab/WARP alone: Colab, WARP, then each account as ONE slot (and its IPs in turn inside it), so
 every account carries the same share as Colab or WARP and spends its
 bandwidth (1 GB a month on the free plan) evenly. The shared pace above is
 unchanged: more IPs add routes, not speed. Webshare tells why it refused in
@@ -368,13 +373,30 @@ def _is_source(url: str) -> bool:
 
 
 _large_urls: set[str] = set()  # file AWS trả "quá 10 MB" trong tiến trình này
+_large_papers: set[str] = set()  # bài có một phiên bản AWS báo quá 10 MB (các phiên bản khác thường cũng lớn)
+
+
+def _paper_of(url: str) -> str:
+    """ID of the paper of a source URL without its version ("2605.14854" for
+    .../src/2605.14854v3, "hep-th/9901001" for .../src/hep-th/9901001v2), or ""."""
+    match = re.search(r"/(?:src|e-print|pdf)/(.+?)v\d+$", urlsplit(url).path)
+    return match.group(1) if match else ""
+
+
+def _known_large(url: str) -> bool:
+    """AWS reported this source file, or another version of its paper, as over 10 MB."""
+    if url in _large_urls:
+        return True
+    paper = _paper_of(url) if _is_source(url) else ""
+    return bool(paper) and paper in _large_papers
 
 
 def _is_large(url: str) -> bool:
     """File lớn đi vòng xoay có Webshare: chỉ khi bật ARXIV_PROXY_LARGE_FILES,
-    có proxy, và AWS đã báo file này quá 10 MB (AWS là nơi biết cỡ file trước
-    khi tải: không có AWS thì mọi file đi Colab/WARP như cũ)."""
-    return PROXY_LARGE_FILES and url in _large_urls and len(_LARGE_FILE_LIST) > len(_UNLIMITED_LIST)
+    có proxy, và AWS đã báo file này (hoặc một phiên bản khác của cùng bài) quá
+    10 MB (AWS là nơi biết cỡ file trước khi tải: không có AWS thì mọi file đi
+    Colab/WARP như cũ)."""
+    return PROXY_LARGE_FILES and _known_large(url) and len(_LARGE_FILE_LIST) > len(_UNLIMITED_LIST)
 
 
 # ---- AWS route state (one crawler process) ----
@@ -388,12 +410,13 @@ _aws_off = ""                # why AWS was turned off for the rest of this proce
 
 def _aws_serves(url: str) -> bool:
     """AWS can carry `url` (pauses aside): gateways running, export.arxiv.org,
-    a source file only with ARXIV_AWS_FILES, and not a URL AWS failed before."""
+    a source file only with ARXIV_AWS_FILES, not a URL AWS failed before, and
+    not a version of a paper AWS already reported as over 10 MB."""
     if not _gateway or _aws_off:
         return False
     if (urlsplit(url).hostname or "") != AWS_HOST:
         return False
-    if _is_source(url) and not AWS_FILES:
+    if _is_source(url) and (not AWS_FILES or _known_large(url)):
         return False
     return url not in _aws_skip
 
@@ -1088,9 +1111,15 @@ class _ArxivAdapter(HTTPAdapter):
         if error:
             response.close()
             low = error.lower()
-            too_large = response.status_code == 413 or "large" in low or "size" in low
+            # Over 10 MB, API Gateway answers its own HTTP 500 "Internal server error" (06/11:
+            # 610 of 610 on source files were files of 10-90 MB), not 413.
+            too_large = (response.status_code == 413 or "large" in low or "size" in low
+                         or (_is_source(url) and response.status_code == 500
+                             and "internal server error" in low))
             if too_large:
                 _large_urls.add(url)  # gửi lại qua vòng xoay file lớn (Colab/WARP + Webshare nếu bật)
+                if _paper_of(url):
+                    _large_papers.add(_paper_of(url))  # các phiên bản khác của bài: khỏi thử AWS
             _aws_fallback(url, error + (" (quá 10 MB)" if too_large else ""), own_failure=not too_large)
             return None, False
         _aws_answered()

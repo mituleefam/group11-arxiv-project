@@ -245,7 +245,13 @@ Các kỹ thuật đi kèm:
   được thử lại qua đường kế tiếp; lỗi proxy không tính là arXiv từ chối.
 - **AWS chở không được thì đổi đường ngay**: API Gateway từ chối câu trả lời trên 10 MB
   và cắt request sau 29 s. Khi đó file được gửi lại qua Colab/WARP sau khi chờ lượt mới,
-  và URL đó không đi qua AWS nữa (log `aws_fallback`). Gateway được khai báo kiểu nhị
+  và URL đó không đi qua AWS nữa (log `aws_fallback`). File trên 10 MB bị API Gateway trả
+  `HTTP 500 InternalServerErrorException Internal server error`, không phải 413: lần chạy
+  5000 ID ngày 06/11 có 610 lỗi như vậy, cả 610 đều là file 10–90 MB. Còn 161 lỗi 504
+  (`Network error communicating with endpoint`, `Endpoint request timed out`) thì gần hết là
+  file nhỏ hơn. Vì vậy lỗi 500 đó ở file nguồn được tính là "quá 10 MB": file đi vòng xoay
+  file lớn (có Webshare khi bật `WEBSHARE_FILE_LON`), không tính là AWS hỏng (không làm
+  AWS bị tạm bỏ 5 phút), và các phiên bản khác của cùng bài cũng không thử AWS nữa. Gateway được khai báo kiểu nhị
   phân `*/*` để file `.tar.gz` không bị đổi thành chữ. arXiv trả 403 qua AWS 3 lần
   trong khi Colab/WARP vẫn tải được thì AWS bị tắt cho phần còn lại của lượt chạy.
 - **Webshare theo tài khoản**: các IP cùng user/password được gom thành một tài khoản,
