@@ -745,10 +745,13 @@ class RateLimiter:
                 gap = self.interval + (self.burst_pause if self._in_burst >= self.burst else 0.0)
                 start_at = max(self._last_start + gap, self._paused_until)
                 if start_at <= now and self._probe_needed:
+                    me = threading.get_ident()
                     if self._probe_thread is None:
-                        self._probe_thread = threading.get_ident()
-                    else:
+                        self._probe_thread = me
+                    elif self._probe_thread != me:
                         start_at = now + 0.05  # the probe is out: wait for its answer
+                    # else: the probe itself, sent again through another route after AWS could
+                    # not carry it (_wait_new_turn); waiting for its own answer would hang every thread
                 if start_at <= now:
                     if self._in_burst >= self.burst or \
                             now - self._last_start >= self.interval + self.burst_pause:
