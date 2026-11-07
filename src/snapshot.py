@@ -22,6 +22,8 @@ crawler runs are left out: work/downloads/ (partial downloads), *.tmp files
 and folders (files being written) and work/crawler.lock. The data folder keeps
 work/snapshot_index.json, the size and modification time of every file the
 archives hold, so save() finds the changes without reading archives back.
+Archives hold files, not folders: a folder that is empty is not restored
+(chunked_crawl.py makes the empty folders of the crawler's versions again).
 
 Call save() only while no crawler writes into the folder (chunked_crawl.py
 calls it between steps). Nothing in the backup folder is ever overwritten or

@@ -34,6 +34,10 @@ heartbeat (group_benchmark.py lists such runs). They are copied into
 <data_dir>/logs, where benchmark_runs.py and group_benchmark.py read them.
 The steps done are recorded in <data_dir>/work/chunk_journal.jsonl, which the
 archives carry, so a restored folder knows which steps its files hold.
+The archives hold files only, so the empty folder of a version with no
+.tex/.bib (pdf_only, no_tex: downloader.py still puts its folder in place,
+and validate.py fails a version whose folder is missing) is made again from
+versions.json after every restore.
 
 The journal also names each try's benchmark.py run, and only the runs it
 names have their measurements copied: a runtime that dies after a step ended
@@ -74,8 +78,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import snapshot
-from common import SUCCESS, CsvLog, DataLayout, Manifest, now_iso
+from common import PDF_ONLY, SUCCESS, CsvLog, DataLayout, Manifest, now_iso
 from discovery import RangeBound, known_records
+from extractor import NO_TEX
 from main import LEFT_KEYS
 
 SRC = Path(__file__).resolve().parent
@@ -184,6 +189,31 @@ def copy_perf(run: Run) -> None:
             shutil.copy2(path, target)
 
 
+EMPTY_FOLDER_STATUSES = (PDF_ONLY, NO_TEX)  # finished versions whose folder has no file
+VERSION_NAME = re.compile(r"^v\d+$")
+
+
+def make_empty_version_folders(data_dir: Path) -> int:
+    """Make the folder of every pdf_only / no_tex version that versions.json
+    records but the disk lacks: a snapshot archive holds files only, so a
+    restore cannot bring back an empty folder. Returns how many were made."""
+    made = 0
+    for path in sorted(DataLayout(data_dir).corpus.glob("*/versions.json")):
+        try:
+            versions = json.loads(path.read_text(encoding="utf-8")).get("versions")
+        except (OSError, ValueError, AttributeError):
+            continue  # validate.py reports a versions.json it cannot read
+        if not isinstance(versions, dict):
+            continue
+        for version, record in versions.items():
+            if (VERSION_NAME.match(version) and isinstance(record, dict)
+                    and record.get("status") in EMPTY_FOLDER_STATUSES
+                    and not (path.parent / version).exists()):
+                (path.parent / version).mkdir()
+                made += 1
+    return made
+
+
 def restore(run: Run) -> None:
     if not run.backup_dir:
         return
@@ -194,6 +224,10 @@ def restore(run: Run) -> None:
         print(f"[{run.name}] restored {count} archives from {run.archives} in {seconds:.0f} s",
               flush=True)
         log_snapshot(run, "", "restore", f"{count} archives", seconds, 0)
+    made = make_empty_version_folders(run.data_dir)
+    if made:
+        print(f"[{run.name}] made again the empty folders of {made} versions with no .tex/.bib "
+              f"(pdf_only, no_tex), which the archives cannot hold", flush=True)
     copy_perf(run)
 
 
