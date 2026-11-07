@@ -40,6 +40,7 @@ LAST_STATS: counts of the last call (rows in, rows out, renames, conflicts).
 from __future__ import annotations
 
 import difflib
+import re
 import logging
 from collections import Counter, defaultdict
 
@@ -100,6 +101,14 @@ def _similar(a: str, b: str) -> float:
     if a == b:
         return 1.0
     return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio()
+
+
+_ROMAN = {"i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"}
+
+
+def _numbering(title: str) -> set[str]:
+    """The numbers of a title: "Harmonic integrals II", "Llama 2", "GPT-4"."""
+    return {w for w in re.split(r"[^\w]+", title) if w in _ROMAN or any(c.isdigit() for c in w)}
 
 
 def _disagree(a: _Ref, b: _Ref) -> bool:
@@ -182,6 +191,7 @@ def _groups(refs: list[_Ref]) -> tuple[_UnionFind, Counter]:
                 same_year = bool(a.year and a.year == b.year)
                 same_author = bool(a.surname and a.surname == b.surname)
                 if (same_year or same_author) and _compatible(a, b) and not _disagree(a, b) \
+                        and _numbering(a.title) == _numbering(b.title) \
                         and _similar(a.title, b.title) >= TITLE_FUZZY:
                     if uf.union(i, j):
                         why["fuzzy_title"] += 1

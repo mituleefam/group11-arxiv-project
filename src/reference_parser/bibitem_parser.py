@@ -59,7 +59,8 @@ def iter_cite_groups(text: str):
     biblatex \\parencite*{a} and multicites \\cites(pre)(post)[x]{a}[y]{b}."""
     for m in CITE_COMMAND.finditer(text):
         name = m.group(1)
-        if name.lower() in ("citestyle", "citeindexfalse", "citeindextrue"):
+        if name.lower() in ("citestyle", "citeindexfalse", "citeindextrue",
+                            "citenamefont", "citenumfont", "citeauthoryear"):  # the labels of a .bbl: no keys
             continue
         multi = name.endswith("cites")
         i = m.end()
@@ -146,9 +147,116 @@ def bibinfo_fields(raw: str) -> dict[str, str]:
     return {name: (" and ".join(v) if name in ("author", "editor") else v[0]) for name, v in fields.items()}
 
 
+# Journal macros of the astronomy classes (aastex, mnras...), whose definitions are not in the source
+JOURNAL_MACROS = {"apj": "ApJ", "apjl": "ApJL", "apjs": "ApJS", "aj": "AJ", "mnras": "MNRAS", "aap": "A&A",
+                  "aaps": "A&AS", "aapr": "A&ARv", "araa": "ARA&A", "pasp": "PASP", "pasj": "PASJ", "pasa": "PASA",
+                  "nat": "Nature", "jcap": "JCAP", "prd": "Phys. Rev. D", "prl": "Phys. Rev. Lett.",
+                  "pra": "Phys. Rev. A", "prb": "Phys. Rev. B", "prc": "Phys. Rev. C", "pre": "Phys. Rev. E",
+                  "physrep": "Phys. Rep.", "apss": "Ap&SS", "na": "New Astron.", "nar": "New Astron. Rev.",
+                  "solphys": "Sol. Phys.", "ssr": "Space Sci. Rev.", "memsai": "Mem. Soc. Astron. Italiana",
+                  "qjras": "QJRAS", "bain": "Bull. Astron. Inst. Netherlands", "jgr": "J. Geophys. Res."}
+# Read by name further on: an author's own definition of these must not replace them
+NOT_EXPANDED = {"doi", "url", "href", "path", "nolinkurl", "newblock", "bibinfo", "bibfield", "emph", "textit",
+                "textbf", "textsl", "bibitem", "cite", "it", "bf", "em", "sl"}
+_DEFINE = re.compile(r"\\(?:re|provide)?(?:new)?command\*?\s*(?:\{\s*\\([A-Za-z@]+)\s*\}|\\([A-Za-z@]+))"
+                     r"|\\[gex]?def\s*\\([A-Za-z@]+)")
+_DEF_PARAMETERS = re.compile(r"(?:\[#[1-9]\]|#[1-9])*")
+_MACRO_USE = re.compile(r"\\([A-Za-z@]+)")
+_PROGRAMMING = re.compile(r"\\(?:expandafter|csname|ifx|if[a-z@]*|typeout|let|[gex]?def|newcommand|providecommand|"
+                          r"renewcommand|global|begingroup|relax|hskip|catcode)(?![A-Za-z@])")
+_IF_NEXT = re.compile(r"\s*\\@ifnextchar\s*\[")
+MAX_EXPANDED = 20_000  # characters of one expanded reference: a macro that calls itself stops here
+
+
+def reference_macros(text: str) -> dict[str, tuple[list[str], str | None, str]]:
+    """The macros the document defines: name -> (argument kinds, default of an
+    optional first argument, body). A kind is "brace" or "bracket"."""
+    # \foreignlanguage{en}{text}: what IEEEtran's .bbl defines with TeX programming, only the text counts
+    macros: dict[str, tuple[list[str], str | None, str]] = {"foreignlanguage": (["brace", "brace"], None, "#2")}
+    for m in _DEFINE.finditer(text):
+        name = m.group(1) or m.group(2) or m.group(3)
+        at = m.end()
+        kinds: list[str] = []
+        default = None
+        if m.group(3):                                   # \def\name[#1]#2{body}
+            parameters = _DEF_PARAMETERS.match(text, at)
+            kinds = ["bracket" if p.startswith("[") else "brace" for p in re.findall(r"\[#[1-9]\]|#[1-9]", parameters.group(0))]
+            at = parameters.end()
+        else:                                            # \newcommand{\name}[2][default]{body}
+            at = skip_spaces(text, at)
+            count = read_bracketed(text, at)
+            if count and count[0].strip().isdigit():
+                kinds = ["brace"] * int(count[0])
+                at = skip_spaces(text, count[1])
+                optional = read_bracketed(text, at)
+                if optional and kinds:
+                    default, at, kinds[0] = optional[0], skip_spaces(text, optional[1]), "optional"
+        body = read_braced(text, skip_spaces(text, at))
+        if body is not None and name not in NOT_EXPANDED and not _PROGRAMMING.search(body[0]):
+            macros.setdefault(name, (kinds, default, body[0]))
+    return macros
+
+
+def _macro_arguments(text: str, at: int, kinds: list[str], default: str | None) -> tuple[list[str], int] | None:
+    """The arguments that follow a macro, and where they end; None when they are not there."""
+    values = []
+    for kind in kinds:
+        at = skip_spaces(text, at)
+        if kind == "brace":
+            group = read_braced(text, at)
+            if group is None:
+                return None
+            values.append(group[0])
+            at = group[1]
+        else:
+            group = read_bracketed(text, at)
+            if group is None and kind == "bracket":
+                return None
+            values.append(group[0] if group else default or "")
+            at = group[1] if group else at
+    return values, at
+
+
+def expand_macros(raw: str, macros: dict) -> str:
+    """A reference with the author's macros replaced, so that a list written as
+    \\article{authors}{journal}{volume}{page}{year}{title} reads as plain text."""
+    out, pos = [], 0
+    while True:
+        m = _MACRO_USE.search(raw, pos)
+        if m is None or len(raw) > MAX_EXPANDED:
+            out.append(raw[pos:])
+            return "".join(out)
+        name = m.group(1)
+        out.append(raw[pos:m.start()])
+        pos = m.end()
+        if name in macros:
+            kinds, default, body = macros[name]
+            if not kinds and _IF_NEXT.match(body):       # \@ifnextchar[{\with}{\without}
+                first = read_braced(body, _IF_NEXT.match(body).end())
+                second = read_braced(body, first[1]) if first else None
+                if second:
+                    raw = (first[0] if raw[skip_spaces(raw, pos):skip_spaces(raw, pos) + 1] == "[" else second[0]) + raw[pos:]
+                    pos = 0
+                    continue
+            arguments = _macro_arguments(raw, pos, kinds, default)
+            if arguments is None:
+                out.append(m.group(0))
+                continue
+            values, end = arguments
+            filled = re.sub(r"#([1-9])", lambda x: values[int(x.group(1)) - 1] if int(x.group(1)) <= len(values) else "", body)
+            raw, pos = filled + " " + raw[end:], 0
+        elif name in JOURNAL_MACROS:
+            out.append(JOURNAL_MACROS[name])
+            if raw[pos:pos + 2] == "{}":
+                pos += 2
+        else:
+            out.append(m.group(0))
+
+
 def parse_bibitems(text: str) -> list[dict]:
     """Every \\bibitem[label]{key} text of the document."""
     entries = []
+    macros = reference_macros(text)
     for block in _bib_blocks(text):
         starts = list(_BIBITEM.finditer(block))
         for n, m in enumerate(starts):
@@ -162,7 +270,7 @@ def parse_bibitems(text: str) -> list[dict]:
                 continue
             key = key_group[0].strip()
             stop = starts[n + 1].start() if n + 1 < len(starts) else len(block)
-            raw = block[key_group[1]:stop].strip()
+            raw = expand_macros(block[key_group[1]:stop].strip(), macros)
             if not key:
                 continue
             entries.append({"citation_key": key, "source": "bibitem", "entry_type": None,

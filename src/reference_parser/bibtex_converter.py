@@ -229,6 +229,12 @@ def person_name(s: str) -> str | None:
     return _join(" ".join(words[start:]), " ".join(words[:start]))
 
 
+# "Balinskii A. A.": the family name, then its initials without a comma
+_CAPITALS = "A-Z\u00C0-\u024F"
+_LAST_THEN_INITIALS = (rf"[{_CAPITALS}][\w'\u2019\-]+(?:[ \-][{_CAPITALS}][\w'\u2019\-]+)?\s+"
+                       rf"(?:[{_CAPITALS}]\.[ \-]?)+")
+_LAST_THEN_INITIALS_GROUPS = re.compile(rf"([{_CAPITALS}][\w'\u2019\-]+(?:[ \-][{_CAPITALS}][\w'\u2019\-]+)?)\s+"
+                                        rf"((?:[{_CAPITALS}]\.?[ \-]?)+)")
 _INITIALS_ONLY = re.compile(r"(?:[A-ZÀ-ɏ]\.-?)*[A-ZÀ-ɏ]\.?")  # the last "." of a list was stripped
 
 
@@ -252,6 +258,7 @@ def _name_initial_pairs(s: str) -> list[str]:
 def text_authors(s: str) -> list[str]:
     """Authors of a free-text author list, as "Last, First"."""
     s = _EDS.sub("", latex_to_text(s)).strip(" .,;:")
+    s = re.sub(r",\s*(Jr|Sr|II|III|IV)\.?(?=\s*,)", r" \1", s)  # "Anderson, Jr., J. E."
     s = _ETAL.split(s)[0].strip(" .,;:")
     if not s:
         return []
@@ -263,7 +270,7 @@ def text_authors(s: str) -> list[str]:
             break
         pairs.append(_join(m.group("last"), m.group("first")))
         pos = m.end()
-        nxt = re.match(r"\s*(?:,\s*(?:and\s+|&\s*)?|\s+and\s+|\s*&\s*)", s[pos:])
+        nxt = re.match(r"\s*(?:,\s*(?:and\s+|&\s*)?|and\s+|&\s*)", s[pos:])
         if not nxt or not nxt.group(0):
             break
         pos += nxt.end()
@@ -272,6 +279,10 @@ def text_authors(s: str) -> list[str]:
     # "Vaswani, Ashish and Shazeer, Noam": BibTeX style written out
     if re.search(r"\s+and\s+", s) and all(p.count(",") == 1 for p in _AND.split(s)):
         return [_join(*p.split(",", 1)) for p in _AND.split(s)]
+    pieces = [p for p in re.split(r"\s*,\s*(?:and\s+|&\s*)?|\s+and\s+|\s*&\s*", s) if p]
+    last_first = [_LAST_THEN_INITIALS_GROUPS.fullmatch(p) for p in pieces]
+    if pieces and all(last_first) and any("." in p for p in pieces):
+        return [_join(m.group(1), m.group(2).strip()) for m in last_first]
     return _name_initial_pairs(s) or [n for n in (person_name(p) for p in _NAME_SEP.split(s)) if n]
 
 
@@ -288,7 +299,7 @@ _ABBREV = {"al", "proc", "conf", "int", "intl", "vol", "no", "nos", "pp", "eds",
            "mr", "mrs", "ms", "dr", "prof", "jpn", "eur", "europ", "nat", "theor", "exp", "rep",
            "opt", "electron", "mater", "geophys", "atmos", "oceanogr", "environ", "rec", "ser"}
 _MARK_ITALIC = re.compile(r"\\(?:emph|textit|textsl|mathit)\s*(?=\{)|\{\\(?:em|it|sl|itshape)(?![A-Za-z])")
-_QUOTED = re.compile(r"``(.+?)''|\u201c(.+?)\u201d|(?<![\w\\])\"(.{8,}?)\"(?!\w)", re.S)
+_QUOTED = re.compile(r"``(.+?)''|`(.{8,}?)'(?=[\s,.\[\x06]|$)|\u201c(.+?)\u201d|(?<![\w\\])\"(.{8,}?)\"(?!\w)", re.S)
 _NEWBLOCK = re.compile(r"\\newblock(?![A-Za-z])")
 _APA_YEAR = re.compile(r"\(\s*((?:1[89]|20)\d\d)[a-z]?(?:,\s*[A-Za-z]+\.?(?:\s+\d{1,2})?)?\s*\)")
 _URL_CMD = re.compile(r"\\(?:url|path|nolinkurl)\s*(?=\{)")
@@ -391,6 +402,72 @@ _SPRINGER = re.compile(r"^\s*[^\s,:][^,:]*,\s*[A-ZÀ-ɏ][^:]*?"
                        r"(?:[A-ZÀ-ɏ]\.|\bet\.?\s+al\.?)(?:\s*\(eds?\.\))?:\s")
 _EDITORS = re.compile(r"^[^()]{0,600}\(eds?\.\)\s*")  # the editors before a book's name
 
+_CAPITAL = "A-Z\u00C0-\u024F"
+# Mathematics and physics: "F. Bracci, H. Gaussier and A. Zimmer, Title, Journal 126 (2024)".
+_INITIAL_NAME = (rf"(?:[{_CAPITAL}]\.[ \-]?)+(?:(?:de|del|der|den|di|du|da|la|le|van|von|ter|el|al)\s+)*"
+                 rf"[{_CAPITAL}][\w'\u2019\-]+(?:[ \-][{_CAPITAL}][\w'\u2019\-]+){{0,2}}")
+_ANY_NAME = rf"(?:{_INITIAL_NAME}|{_LAST_THEN_INITIALS})"
+_INITIAL_AUTHORS = re.compile(rf"\s*{_ANY_NAME}(?:\s*(?:,\s*(?:and\s+|&\s*)?|\s+and\s+|&\s*){_ANY_NAME})*"
+                              r"(?:,?\s*et\.?\s*al\.?)?(?=\s*(?:[,.:;]|$))")
+# The volume and year that follow a journal's name: "126 (2024)", "139:11 (2011)", "17, 891 (1905)", "9(8)"
+_VOLUME = re.compile(r"\b\d+(?::\d+)?(?:\s*\(\d{1,3}\))?(?:\s*,?\s*[Nn]o\.\s*\d+)?(?:\s*[,:]\s*[\w.\-]+)?\s*\((?:1[89]|20)\d\d\)|\b\d+\s*\(\d{1,3}\)")
+_JOURNAL_WORD = rf"(?:[{_CAPITAL}][\w.'&\u2019\-]*|of|the|and|in|on|de|for|&)"
+_JOURNAL = re.compile(rf"\s*\x05?\s*{_JOURNAL_WORD}(?:\s+{_JOURNAL_WORD}){{0,9}}\s*\x06?[\s,]*")
+# What starts the venue when there is no volume to go by
+_VENUE_START = re.compile(rf"[.,]\s+(?=\x05?\s*(?:[{_CAPITAL}][a-z]{{0,7}}\.\s|[Ii]n:?\s|work in progress\b|in preparation\b|to appear\b|submitted\b|Conference\b|Proceedings\b|Journal\b|"
+                          r"Annals\b|Transactions\b|[Pp]reprint\b|arXiv\b|Ph\.?\s?D\b|Thesis\b|Master|Lecture Notes\b|"
+                          r"Springer\b|Cambridge\b|Oxford\b|Wiley\b|Birkh|Academic\b|Elsevier\b|Princeton\b|Kluwer\b|"
+                          r"American Math|World Scientific\b|North-Holland\b|CRC\b|Dover\b|MIT Press\b))")
+# Astronomy: "White, S. D. M., and Rees, M. J. 1978, MNRAS, 183, 341": the year follows the authors
+_YEAR_AFTER_AUTHORS = re.compile(r"\s+((?:1[89]|20)\d\d)[a-z]?[,.:]\s+")
+_JOURNAL_ONLY = re.compile(rf"\s*\x05?\s*(?:arXiv\b[\w\s\-]*|{_JOURNAL_WORD}(?:\s+{_JOURNAL_WORD}){{0,7}})\s*\x06?"
+                           r"\s*(?:,?\s*[A-Z]?\d|,?\s*(?:in press|in prep|submitted|accepted|arXiv)|[\s,.;]*$)")
+
+
+def _italic_title(text: str) -> re.Match | None:
+    """The italic part when it is the title: right after the authors, several
+    words, and not a journal followed by its volume ("A. Author, {\\it Ann. Math.} 12 (2000)")."""
+    m = re.search(r"\x05\s*(.+?)\s*\x06", text)
+    if m is None or len(m.group(1).split()) < 2:
+        return None
+    authors = text[:m.start()].strip(" ,.:;")
+    pieces = [p for p in re.split(r"\s*,\s*(?:and\s+|&\s*)?|\s+and\s+|\s*&\s*", authors) if p]
+    if not pieces or not all(_looks_like_names(p) for p in pieces):
+        return None
+    after = text[m.end():].lstrip(" ,")
+    is_journal = "." in m.group(1) and _JOURNAL.fullmatch(m.group(1)) and _VOLUME.match(after)
+    return None if is_journal or _VOLUME.match(after) else m
+
+
+def _title_and_venue(rest: str) -> tuple[str, str]:
+    """A reference without its authors, cut into title and venue: the venue is
+    what names the journal before its volume, else what looks like a venue."""
+    volume = _VOLUME.search(rest)
+    if volume:
+        starts = [0] + [m.end() for m in re.finditer(r"[.,]\s+", rest[:volume.start()])]
+        for start in starts:
+            if _JOURNAL.fullmatch(rest[start:volume.start()]):
+                title = rest[:start].strip(" ,.;:")
+                ends = _sentence_ends(title + ". X")[:-1]  # "Title. Book of the proceedings, Lecture Notes 12 (2000)"
+                return (title[:ends[0]], rest[ends[0]:]) if ends else (title, rest[start:])
+    venue = _VENUE_START.search(rest)
+    if venue:
+        return rest[:venue.start()], rest[venue.end():]
+    ends = _sentence_ends(rest)
+    if ends:
+        return rest[:ends[0]], rest[ends[0]:]
+    pieces = rest.split(", ", 1)                         # "Title, Journal 3, 45 (2001)"
+    return (pieces[0], pieces[1]) if len(pieces) == 2 else (rest, "")
+
+
+def _year_after_authors(text: str) -> re.Match | None:
+    """The year when it comes right after "Last, F., Last, F." with no title before it."""
+    m = _YEAR_AFTER_AUTHORS.search(text)
+    if m is None:
+        return None
+    authors = text[:m.start()]
+    return m if authors.endswith(".") and not re.search(r"\d", authors) and _LAST_FIRST.match(authors) else None
+
 
 def _looks_like_names(piece: str) -> bool:
     words = piece.replace(" and ", " ").split()
@@ -416,7 +493,7 @@ def _authors_end(s: str) -> int | None:
             break
         count += 1
         pos = m.end()
-        nxt = re.match(r"\s*(?:,\s*(?:and\s+|&\s*)?|\s+and\s+|\s*&\s*)", s[pos:])
+        nxt = re.match(r"\s*(?:,\s*(?:and\s+|&\s*)?|and\s+|&\s*)", s[pos:])
         if not nxt or not nxt.group(0):
             break
         if not _LAST_FIRST.match(s, pos + nxt.end()):
@@ -462,7 +539,7 @@ def _classify(venue: str, text: str, has_title: bool) -> str:
                  r"wsdm|cikm|recsys|chi|uist|osdi|sosp|nsdi|isca|focs|stoc|soda)\b", low_v) \
             or re.match(r"\s*in\b", (venue or "").lower()):
         return "inproceedings"
-    if re.search(r"journal|\bj\.|trans\.|transactions|letters|\blett\.|review|\brev\.|annals|\bann\.|"
+    if (re.search(r"\b\d+\s*,\s*\d+", low_v) and "arxiv" not in low_v) or re.search(r"journal|\bj\.|trans\.|transactions|letters|\blett\.|review|\brev\.|annals|\bann\.|"
                  r"magazine|quarterly|bulletin|\bvol\.|volume|nature|science\b|\bplos\b|"
                  r"physical review|\bphys\.", low_v) or re.search(r"\d+\s*\(\d+\)|\b\d+\s*:\s*\d+", low_v):
         return "article"
@@ -495,6 +572,7 @@ def parse_free_text(raw: str, label: str | None = None) -> dict:
     raw = _NEWBLOCK.sub("\x00", raw)
     raw = _mark_italic(raw)
     text = latex_to_text(raw).replace("\x00", " \x00 ")
+    text = re.sub(r"\x05\s*(et\.?\s*al\.?,?)\s*\x06", r"\1", text)
     text = re.sub(r"[ \t]+", " ", text).strip()
     plain = _IDS.sub(" ", text.replace("\x05", "").replace("\x06", "").replace("\x00", ""))
 
@@ -529,11 +607,26 @@ def parse_free_text(raw: str, label: str | None = None) -> dict:
         authors_s = text[:quoted.start()]
         title = next(g for g in quoted.groups() if g)
         venue = text[quoted.end():]
-    elif apa and apa.start() < len(text) * 0.5 and apa.start() > 0:
+    elif apa and apa.start() < len(text) * 0.5 and apa.start() > 0 \
+            and not re.search(r"\d[\s:,\d]*$", text[:apa.start()]):  # "Journal 61 (2006)" is a volume and its year
         authors_s = text[:apa.start()]
         rest = text[apa.end():].lstrip(" .,:")
         ends = _sentence_ends(rest)
         title, venue = (rest[:ends[0]], rest[ends[0]:]) if ends else (rest, "")
+    elif _year_after_authors(text):
+        m = _year_after_authors(text)
+        authors_s, rest, out["year"] = text[:m.start()], text[m.end():], to_year(m.group(1))
+        title, venue = _title_and_venue(rest)
+        # "Science China Physics, Mechanics, and Astronomy, 68, 1": a journal whose name has commas
+        if _JOURNAL_ONLY.match(rest) or (len(title.split()) <= 4 and _JOURNAL.fullmatch(title)):
+            title, venue = "", rest
+    elif _italic_title(text):
+        m = _italic_title(text)
+        authors_s, title, venue = text[:m.start()], m.group(1), text[m.end():]
+    elif not _SPRINGER.match(text) and _INITIAL_AUTHORS.match(text):
+        m = _INITIAL_AUTHORS.match(text)
+        authors_s = m.group(0)
+        title, venue = _title_and_venue(text[m.end():].lstrip(" ,.;:"))
     else:
         springer = _SPRINGER.match(text)
         cut = springer.end() if springer else _authors_end(text)

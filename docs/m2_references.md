@@ -114,8 +114,15 @@ gatherer.gather (M1)                       mỗi version: text đã gộp \input
      cắt ở dấu chấm kết thúc câu, **không** cắt sau chữ viết tắt tên (`A.`, `J.-P.`) hay
      viết tắt thường gặp (`et al.`, `Proc.`, `Vol.`, `Phys.`...);
    - Springer `Last, F., Last, F.: Tiêu đề. Nơi đăng`: cắt ở dấu `:` ngay sau chữ viết tắt tên;
+   - toán, vật lý `F. Last, F. Last, Tiêu đề, J. Math. 12 (2000)`: tên viết tắt đứng trước, nơi đăng là
+     cụm từ viết hoa ngay trước số tập và năm;
+   - thiên văn `Last, F., Last, F. 2005, Nature, 435, 629`: năm ngay sau tác giả, thường không có tiêu đề
+     (khi đó `title` để trống, vì nguồn không ghi);
    - kiểu vật lý không có tiêu đề `A. Einstein, Ann. Phys. 17, 891 (1905)` → chỉ có tác giả + journal.
-4. Phần in nghiêng (`\emph`, `{\em ...}`) trong nơi đăng được lấy làm `journal`.
+4. Macro do tác giả tự định nghĩa trong tài liệu (`\article{...}{...}`, `\jhep`) và macro tên tạp chí của
+   các class thiên văn (`\apj`, `\mnras`...) được thay bằng nội dung trước khi đọc; macro lập trình TeX
+   (`\ifx`, `\csname`...) và các lệnh `\doi`, `\url` không bị thay.
+5. Phần in nghiêng (`\emph`, `{\em ...}`) trong nơi đăng được lấy làm `journal`.
 
 Một tham khảo không đọc được không làm hỏng bài: nó thành dòng `misc` chỉ có key (có log).
 
@@ -128,7 +135,8 @@ Hai dòng (cùng version hoặc khác version) được coi là **một tham kh�
 2. **Cùng DOI**, **cùng arXiv id**, hoặc **cùng URL** (trừ khi tiêu đề khác hẳn).
 3. **Cùng tiêu đề** sau chuẩn hóa (viết thường, bỏ dấu và ký tự đặc biệt; ≥ 3 từ
    hoặc ≥ 15 ký tự), năm không lệch quá 1 và họ tác giả đầu không khác nhau.
-4. **Tiêu đề gần giống** (difflib ≥ 0.92) và cùng năm hoặc cùng họ tác giả đầu. Chỉ so
+4. **Tiêu đề gần giống** (difflib ≥ 0.92), cùng năm hoặc cùng họ tác giả đầu, và cùng số trong tiêu đề
+   (`... II` khác `... I`, `Llama 2` khác `Llama 3`). Chỉ so
    các dòng chung một từ hiếm trong tiêu đề, nên vẫn nhanh với hàng nghìn tham khảo.
 
 Các luật gộp bắc cầu (union-find).

@@ -16,9 +16,9 @@ this script repairs a corpus already crawled, without crawling it again:
     python src/fetch_bbl.py --data-dir data --ids 2604.05535
 
 Run it before pipeline_m2.py, which then reads the .bbl files. Running it again
-goes on where it stopped: a version that got its .bbl is no longer picked, and
-one whose source has no .bbl or is gone (logs/bbl_log.csv) is asked only with
---retry-no-bbl. Failed downloads are tried again. It holds work/crawler.lock, so
+goes on where it stopped: a version that got its .bbl is no longer picked (and
+versions.json gets any file a stopped run had not recorded), and one whose
+source has no .bbl or is gone (logs/bbl_log.csv) is asked only with --retry-no-bbl. Failed downloads are tried again. It holds work/crawler.lock, so
 it cannot run together with a crawler on the same folder.
 """
 
@@ -45,16 +45,46 @@ ADDED, NO_BBL, GONE, FAILED = "added", "no_bbl", "not_found", "failed"
 DOWNLOAD_WORKERS = 6
 
 
+def unrecorded_bbl(folder: Path, record: dict) -> list[str]:
+    """The .bbl files of a version folder that versions.json does not list yet
+    (a run stopped between copying them and saving the record)."""
+    if not folder.is_dir():
+        return []
+    listed = set(record.get("kept_files") or [])
+    found = (p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.suffix.lower() == ".bbl" and p.is_file())
+    return sorted(name for name in found if name not in listed)
+
+
+def record_bbl(paper_dir: Path, arxiv_id: str, version: str) -> tuple[int, int]:
+    """Add the .bbl files on disk to kept_files and kept_bytes; returns their number and size.
+    Written directly: VersionStore.update() would count this as a new download."""
+    store = VersionStore(paper_dir, arxiv_id)
+    record = store.data["versions"][version]
+    folder = paper_dir / version
+    added = unrecorded_bbl(folder, record)
+    if not added:
+        return 0, 0
+    size = sum((folder / name).stat().st_size for name in added)
+    record["kept_files"] = sorted((record.get("kept_files") or []) + added)
+    record["kept_bytes"] = int(record.get("kept_bytes") or 0) + size
+    record["bbl_added_at"] = now_iso()
+    atomic_write_json(store.path, store.data)
+    return len(added), size
+
+
 def scan_paper(paper_dir: str) -> dict:
     """The versions of a paper that need a .bbl."""
     folder = Path(paper_dir)
-    found = {"paper_dir": paper_dir, "arxiv_id": folder.name.replace("-", ".", 1), "versions": [], "error": ""}
+    found = {"paper_dir": paper_dir, "arxiv_id": folder.name.replace("-", ".", 1), "versions": [],
+             "unrecorded": 0, "error": ""}
     try:
         data = json.loads((folder / "versions.json").read_text(encoding="utf-8"))
         found["arxiv_id"] = data.get("arxiv_id") or found["arxiv_id"]
         for version, record in data.get("versions", {}).items():
-            if (record or {}).get("status") == SUCCESS and gather(folder / version, SUCCESS).needs_bbl:
-                found["versions"].append(version)
+            if (record or {}).get("status") == SUCCESS:
+                found["unrecorded"] += len(unrecorded_bbl(folder / version, record))
+                if gather(folder / version, SUCCESS).needs_bbl:
+                    found["versions"].append(version)
     except Exception as exc:  # one paper never stops the scan
         found["error"] = f"{type(exc).__name__}: {exc}"
     return found
@@ -78,6 +108,7 @@ def fetch_version(arxiv_id: str, version: str, paper_dir: Path, layout: DataLayo
     part_file = scratch / f"{paper_dir.name}{version}.bbl.part"
     tmp_dir = scratch / f"{paper_dir.name}{version}.bbl.tmp"
     outcome = {"status": FAILED, "bbl_files": 0, "bbl_bytes": 0, "http_status": "", "error": ""}
+    part_file.unlink(missing_ok=True)  # left by a run that was stopped
     try:
         download = fetch_source(session, versioned_id, part_file, limiter=limiter)
         outcome["http_status"] = download.http_status or ""
@@ -92,26 +123,14 @@ def fetch_version(arxiv_id: str, version: str, paper_dir: Path, layout: DataLayo
             outcome["error"] = str(exc)
             return outcome
         folder = paper_dir / version
-        added = []
         for name in result.kept_files:
             target = folder / name
             if name.lower().endswith(".bbl") and not target.exists():
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(tmp_dir / name, target)
-                added.append(name)
-        if not added:
-            outcome["status"] = NO_BBL
-            return outcome
         # versions.json only after the files are in place, as for a download.
-        # Written directly: VersionStore.update() would count these requests as a new download.
-        store = VersionStore(paper_dir, arxiv_id)
-        record = store.data["versions"][version]
-        size = sum((folder / name).stat().st_size for name in added)
-        record["kept_files"] = sorted(record.get("kept_files", []) + added)
-        record["kept_bytes"] = int(record.get("kept_bytes") or 0) + size
-        record["bbl_added_at"] = now_iso()
-        atomic_write_json(store.path, store.data)
-        outcome.update(status=ADDED, bbl_files=len(added), bbl_bytes=size)
+        count, size = record_bbl(paper_dir, arxiv_id, version)
+        outcome.update(status=ADDED if count else NO_BBL, bbl_files=count, bbl_bytes=size)
         return outcome
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -176,6 +195,18 @@ def main(argv=None) -> int:
     todo = todo[:args.limit] if args.limit is not None else todo
     print(f"[bbl] {len(folders)} papers scanned: {sum(len(p['versions']) for p in todo)} versions of {len(todo)} "
           f"papers to ask, {already} already known to have no .bbl")
+    unrecorded = sum(paper["unrecorded"] for paper in scanned)
+    if unrecorded:
+        print(f"[bbl] {unrecorded} .bbl files on disk are not in versions.json (a run was stopped)"
+              + ("" if args.dry_run else ": added"))
+        if not args.dry_run:
+            for paper in scanned:
+                if paper["unrecorded"]:
+                    path = Path(paper["paper_dir"])
+                    versions = VersionStore(path, paper["arxiv_id"]).data["versions"]
+                    for version, record in versions.items():
+                        if (record or {}).get("status") == SUCCESS:
+                            record_bbl(path, paper["arxiv_id"], version)
     if args.dry_run or not todo:
         return 0
 

@@ -130,6 +130,7 @@ _STRUCT = re.compile(
 _PARAGRAPH_BREAK = re.compile(r"\n[ \t]*(?:\n[ \t]*)+|\\par(?![A-Za-z@])")
 _BRACES = re.compile(r"\\par(?![A-Za-z@])|\\.|[{}]|\n[ \t]*(?:\n[ \t]*)+", re.S)
 _PLACEHOLDER = re.compile("\x00(\\d+)\x00")
+_TITLE_NOISE = re.compile(r"\\protect(?![A-Za-z@])\s*|\\label\s*\{[^{}]*\}")
 
 
 def split_paragraphs(text: str) -> list[str]:
@@ -178,6 +179,12 @@ def document_body(text: str) -> str:
         return text
     end = _END_DOC.search(text, begin.end())
     return text[begin.end():end.start() if end else len(text)]
+
+
+def _title_text(title: str, blocks: list[str]) -> str:
+    """A heading or an item label with its formulas back, without \\label and \\protect:
+    a title that only differs by them between two versions stays one element."""
+    return _TITLE_NOISE.sub("", _PLACEHOLDER.sub(lambda x: blocks[int(x.group(1))], title)).strip()
 
 
 def remove_bibliography(text: str) -> str:
@@ -531,8 +538,7 @@ def build(text: str, root_id: str, registry, extract_leaves) -> Tree:
                     b.buffer.append(m.group(0))
                 continue
             pos = title[1]
-            b.heading(SECTION_LEVELS[command], command, _PLACEHOLDER.sub(
-                lambda x: blocks[int(x.group(1))], title[0]).strip())
+            b.heading(SECTION_LEVELS[command], command, _title_text(title[0], blocks))
         elif m.group("be"):
             env, begin = m.group("env").strip(), m.group("be") == "begin"
             if b.dropping is not None and env not in SECTION_ENVS and env not in APPENDIX_ENVS:
@@ -555,7 +561,7 @@ def build(text: str, root_id: str, registry, extract_leaves) -> Tree:
                 pos = _skip_arguments(masked, pos, FRONT_COMMANDS[m.group("front")])
         elif m.group("item"):
             label = read_optional(masked, pos, TITLE_LIMIT)
-            text_label = _PLACEHOLDER.sub(lambda x: blocks[int(x.group(1))], label[0]).strip() if label else ""
+            text_label = _title_text(label[0], blocks) if label else ""
             if b.item(text_label):
                 pos = label[1] if label else pos
             else:

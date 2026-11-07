@@ -22,6 +22,8 @@ Phần này phụ trách **ID của các phần tử LaTeX sau chuẩn hóa**, k
 
 ## Kiểm tra và đầu ra
 
+Thứ tự chạy đầy đủ của Milestone 2, gồm cả bước tải bù `.bbl` trước khi parse, nằm ở `README.md` mục 8.2. Các lệnh dưới đây chỉ là chạy thử trên 5 bài.
+
 Chạy tại **thư mục gốc repository**, với `data/` là corpus Milestone 1 đã có sẵn (không nằm trong source repo):
 
 ```bash

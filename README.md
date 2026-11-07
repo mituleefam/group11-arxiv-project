@@ -1,4 +1,10 @@
-# arXiv Crawler — Milestone 1 (Group 11)
+# arXiv Project (Group 11)
+
+Milestone 1 is the crawler described from here to section 7. Milestone 2, which
+parses the crawled corpus into tables, is in [section 8](#8-milestone-2-parsing-and-standardization).
+
+## Milestone 1: the crawler
+
 
 Crawls the arXiv papers of an assigned ID range: every version's LaTeX source
 (`.tex`, `.bib` and `.bbl` only, figures removed), the paper metadata, and the reference
@@ -491,3 +497,126 @@ python src/export_report_data.py \
 It writes small aggregated tables (counts, sizes, statuses, timings, RAM/disk samples; no LaTeX text and no
 reference titles) that the book's notebooks read at build time. It sends no request and changes nothing in the
 data folders. Commit the resulting `data/m1/` folder to the book repository, not to this one.
+
+## 8. Milestone 2: parsing and standardization
+
+`src/pipeline_m2.py` turns the Milestone 1 corpus into three Parquet tables:
+
+| Table | One row per |
+| --- | --- |
+| `tables/elements/` | distinct element of a paper across its versions: `element_id`, `arxiv_id`, `kind`, `content` |
+| `tables/hierarchy/` | node-parent edge of a version: `arxiv_id`, `version`, `element_id`, `parent_id` |
+| `tables/bibtex/` | reference after deduplication: `arxiv_id`, `citation_key`, `entry_type`, `title`, `authors`, `year`, `doi`, `journal`, `url` |
+
+```
+src/
+├── pipeline_m2.py        runs every step on every paper, writes the tables
+├── m2_contract.py        what the pipeline calls in each module
+├── gatherer.py           the compilation path of a version and its text as one document
+├── latex_scan.py         comments, verbatim text and brace groups, as TeX reads them
+├── cleaner.py            removes formatting commands
+├── normalizer.py         inline math as $...$, display math as \begin{equation}...\end{equation}
+├── sentence_splitter.py  sentences, without cutting at i.e., Fig. 1, URLs or decimals
+├── leaf_extractor.py     sentences, formulas and figures of a paragraph
+├── hierarchy.py          the tree of a version
+├── dedup_elements.py     one element_id for the same content across versions
+├── reference_parser/     \bibitem, .bib and .bbl to BibTeX rows, deduplication, \cite renames
+├── fetch_bbl.py          adds the .bbl files missing from a corpus crawled earlier
+├── validate_m2.py        checks the JSON files, the trees and the Parquet schemas
+├── benchmark_m2.py       measures a whole run (wall time, peak RAM, output size)
+├── statistics_m2.py      the numbers of the report
+└── benchmark_colab_m2.ipynb   all the steps below on Google Colab, CPU-only
+```
+
+### 8.1. Environment
+
+The environment of [section 1](#1-setting-up-the-environment) is enough: `pyarrow` writes the tables and
+`psutil` measures the benchmark. Keep the data folder on a local disk (on Colab
+`/content`, not Google Drive, which is slow with many small files). `DATA_DIR` below is the
+folder given to `main.py --data-dir`. Run every command from the repository root.
+
+### 8.2. Run order
+
+Run these in order, once for each `DATA_DIR`:
+
+```bash
+# 1. Check the code (offline, a few seconds)
+python src/test_m2_bbl.py
+python src/test_m2_member1.py
+python src/test_m2_member2.py
+python src/reference_parser/test_m2_member3.py
+python src/test_m2_member4.py
+
+# 2. Add the missing .bbl files. Only for a corpus crawled before .bbl files were kept.
+#    Run it before step 3, so the parse reads them. The first command sends no request.
+python src/fetch_bbl.py --data-dir DATA_DIR --dry-run
+python src/fetch_bbl.py --data-dir DATA_DIR
+
+# 3. Trial on 5 papers
+python src/pipeline_m2.py --data-dir DATA_DIR --test --workers 2 --force
+python src/validate_m2.py --data-dir DATA_DIR --limit 5 --require-parquet
+
+# 4. Parse the whole corpus under the benchmark. benchmark_m2.py starts pipeline_m2.py itself.
+#    On Colab, set Runtime -> Change runtime type -> CPU first.
+python src/benchmark_m2.py --data-dir DATA_DIR --workers 2 --force --environment google_colab --cpu-only-declared
+
+# 5. Check the output
+python src/validate_m2.py --data-dir DATA_DIR --require-parquet
+
+# 6. The numbers of the report. reference_stats.py gives the BibTeX counts before deduplication.
+python src/reference_parser/reference_stats.py --data-dir DATA_DIR
+python src/statistics_m2.py --data-dir DATA_DIR --counterfactual-parquet
+```
+
+To parse without measuring anything, step 4 becomes `python src/pipeline_m2.py --data-dir DATA_DIR`.
+
+`fetch_bbl.py` is not part of the benchmark: it downloads, while the benchmark measures the parser.
+`src/benchmark_colab_m2.ipynb` runs all these steps on Colab for one data folder. It saves the `.bbl`
+files to Drive as it goes, so a new runtime does not download them again.
+
+### 8.3. The group's five ranges
+
+Run section 8.2 for each range's folder, then join the tables that each run left in its folder:
+
+```bash
+python src/pipeline_m2.py --data-dir DIR_1 DIR_2 DIR_3 DIR_4 DIR_5 --export-only --out TABLES_DIR
+```
+
+Each folder keeps its own benchmark and statistics. Add up the wall times of the five runs for the
+group's total; each run's peak RAM is its own, so report the largest one rather than a sum.
+
+### 8.4. Why some references come from a `.bbl`
+
+A submission can hold a `.bbl` file instead of its `.bib` files, and then that `.bbl` is the only source
+of its references. As the instructor answered, these references must not be lost, so `extractor.py`
+keeps `.bbl` files next to `.tex` and `.bib`, and `gatherer.py` reads one only when the document has no
+`.bib` for its `\bibliography`. A corpus crawled earlier gets them from `fetch_bbl.py`, which downloads
+only the versions with citations and no source of references, and never replaces a file.
+A version whose source has no `.bbl` stays without references and is counted, see below.
+
+### 8.5. Resuming
+
+- `pipeline_m2.py` skips papers already parsed by the same code. A change in any Milestone 2 module
+  parses everything again; `--keep` skips them anyway, `--force` parses them all.
+- `fetch_bbl.py` goes on where it stopped and tries failed downloads again. A version whose source had no
+  `.bbl` is asked again only with `--retry-no-bbl`.
+- A run cut off by Colab is not a complete benchmark: its numbers are not an end-to-end wall time.
+
+### 8.6. Output
+
+| Path in `DATA_DIR` | Content |
+| --- | --- |
+| `corpus/<yymm-id>/parsed/` | `elements.json`, `hierarchy.json`, `bibtex.json`, `cite_rename_map.json`, `gathering.json` (per version: root, files, `.bbl` read, problems) |
+| `tables/` | the three Parquet tables and `tables.json` (row counts and sizes) |
+| `logs/parse_log.csv`, `logs/parse_manifest.jsonl` | one row per paper and run; the state used for resuming |
+| `logs/bbl_log.csv` | one row per version asked by `fetch_bbl.py`: `added`, `no_bbl`, `not_found` or `failed` |
+| `logs/validation_report_m2.csv` | every check of `validate_m2.py`: `PASS`, `WARN` or `FAIL` |
+| `logs/performance_log_m2.csv` | wall time, peak RAM (sampled) and Parquet size of each benchmark run |
+| `logs/reference_log.csv` | per paper: BibTeX rows before and after deduplication, keys renamed, fields found |
+| `logs/summary_statistics_m2.csv` | `metric,value,unit,scope,source,note`, read by the report |
+
+In `summary_statistics_m2.csv`, `versions_references_from_bbl` counts the versions whose references came
+from a `.bbl`, and `versions_references_in_missing_bbl` those that name a `.bib` or `.bbl` that is not
+in the folder. Keep data, tables and logs out of this repository: the report reads only the aggregated numbers.
+
+See `docs/m2_references.md` for the reference steps and `docs/m2_member4.md` for validation, statistics and the benchmark.
