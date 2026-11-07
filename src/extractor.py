@@ -1,7 +1,8 @@
 """Member 2 - File detection and extraction.
 
-Turns one downloaded arXiv source file into the `.tex` and `.bib` files of a
-version folder. arXiv's /src/ endpoint does not always send a .tar.gz, so the
+Turns one downloaded arXiv source file into the `.tex`, `.bib` and `.bbl` files
+of a version folder (a `.bbl` is kept because it can be the only source of a
+paper's references, as the instructor's answer asks). arXiv's /src/ endpoint does not always send a .tar.gz, so the
 real format is detected from the file's first bytes (its "magic number"):
 
     gzip + tar inside    -> "tar.gz"       extract the .tex/.bib members
@@ -15,7 +16,7 @@ real format is detected from the file's first bytes (its "magic number"):
     HTML page            -> error page from the server, not a source: failed
 
 Rules followed:
-  * only `.tex` and `.bib` files are written, so figures and every other
+  * only `.tex`, `.bib` and `.bbl` files are written, so figures and every other
     binary never enter the corpus;
   * the files are copied byte for byte: no LaTeX command is changed, so
     `\\begin{figure}`, `\\includegraphics`, `\\input`, `\\cite`... stay as they are;
@@ -26,7 +27,7 @@ Rules followed:
 
 Sizes are measured on one basis, the *uncompressed* size of the files:
 `original_bytes` is the total size of every regular file in the source and
-`kept_bytes` the total size of the kept .tex/.bib files, so
+`kept_bytes` the total size of the kept files, so
 `1 - kept_bytes / original_bytes` is the share removed by dropping figures and
 other files. The compressed download size is measured by downloader.py.
 """
@@ -49,7 +50,7 @@ from common import PDF_ONLY, SUCCESS
 # HTML submission...). Like pdf_only it is final: downloading again won't help.
 NO_TEX = "no_tex"
 
-KEEP_EXTENSIONS = (".tex", ".bib")
+KEEP_EXTENSIONS = (".tex", ".bib", ".bbl")
 # Only used for the statistics of the report (how much of a source is figures).
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".svg",
                     ".eps", ".ps", ".pdf", ".webp", ".pgm", ".ppm", ".pbm")
@@ -80,7 +81,7 @@ class ExtractionResult:
     original_files  number of regular files in the source
     original_bytes  total uncompressed size of those files
     image_bytes     part of original_bytes that are figure files
-    kept_files      relative paths of the written .tex/.bib files (POSIX style)
+    kept_files      relative paths of the written .tex/.bib/.bbl files (POSIX style)
     kept_bytes      total size of the written files
     skipped         members that were not written, with the reason
                     (unsafe path, link, name the file system refused)
@@ -224,7 +225,7 @@ def _target_inside(dest: Path, rel: PurePosixPath) -> Path | None:
 
 
 def is_kept(name: str) -> bool:
-    """True for the file types the corpus keeps (.tex and .bib, any case)."""
+    """True for the file types the corpus keeps (.tex, .bib and .bbl, any case)."""
     return name.lower().endswith(KEEP_EXTENSIONS)
 
 
@@ -388,7 +389,7 @@ def extract_source(path: Path, dest: Path, *, fallback_name: str = "main.tex") -
     unknown, e.g. "2604-05535v1.tex".
 
     Returns an ExtractionResult whose status is
-      SUCCESS   at least one .tex/.bib file was written,
+      SUCCESS   at least one .tex/.bib file was written (a .bbl alone is no source),
       PDF_ONLY  the source is a PDF, nothing is written,
       NO_TEX    the source has no .tex/.bib (DOCX, PostScript, HTML
                 submission...), nothing is written.
@@ -441,6 +442,10 @@ def extract_source(path: Path, dest: Path, *, fallback_name: str = "main.tex") -
         return result
 
     result.kept_files, result.kept_bytes = _kept_on_disk(dest)
+    if result.kept_files and all(name.lower().endswith(".bbl") for name in result.kept_files):
+        for name in result.kept_files:  # no document to go with them: the same as no source
+            (dest / name).unlink()
+        result.kept_files, result.kept_bytes = [], 0
     if not result.kept_files:
         result.status = NO_TEX
     return result

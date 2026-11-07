@@ -101,7 +101,7 @@ def analyze(root: Path | list[Path], benchmark_summary: Path | None = None,
                                    not PurePosixPath(name).is_absolute() and
                                    "\\" not in name and
                                    not any(part in (".", "..") for part in PurePosixPath(name).parts) and
-                                   PurePosixPath(name).suffix.lower() in (".tex", ".bib")
+                                   PurePosixPath(name).suffix.lower() in (".tex", ".bib", ".bbl")
                                    for name in names)
                         if safe and len(set(names)) == len(names):
                             kept = [paper / version / name for name in names]
