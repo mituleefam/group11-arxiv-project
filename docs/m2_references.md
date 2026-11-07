@@ -74,6 +74,14 @@ gatherer.gather (M1)                       mỗi version: text đã gộp \input
 - **Chỉ giữ entry được trích dẫn** (giống BibTeX): key nằm trong `\cite`,
   `\citep`, `\citet*`, `\parencite`, `\nocite`, ... `\nocite{*}` hoặc tài liệu
   không có `\cite` nào → giữ hết. Số entry bị bỏ ghi vào log (`bib_uncited_dropped`).
+- **File `.bbl`**: thầy trả lời trong Q&A là không được để mất tham khảo của bài
+  chỉ có `.bbl`. `gatherer` đọc `.bbl` khi `\input{x.bbl}`, hoặc khi `\bibliography{x}`
+  không có `x.bib` (tìm `<root>.bbl`, rồi `x.bbl`, rồi file `.bbl` duy nhất trong thư mục).
+  `bbl_converter.py` tách `thebibliography` (đưa vào text để đọc như `\bibitem`) và
+  chuyển `.bbl` của biblatex (`\entry`, `\field`) ngược về BibTeX. Nếu có cả `.bib`
+  thì dùng `.bib`. Corpus đã crawl: chạy `src/fetch_bbl.py` trước `pipeline_m2.py`
+  (mục 9). Bài không có `.bbl` trong nguồn vẫn được ghi lại (`gathering.json`,
+  `logs/bbl_log.csv`, metric `versions_references_in_missing_bbl`).
 - **File `.bib` fallback**: khi tài liệu không khai báo nguồn nào, `gatherer`
   đưa các `.bib` trong thư mục (`g.bib_fallback`); `reference_stats.py` ghi
   log mỗi lần dùng fallback.
@@ -105,6 +113,7 @@ gatherer.gather (M1)                       mỗi version: text đã gộp \input
    - `Last, F., Last, F. Tiêu đề.` / `F. Last, F. Last. Tiêu đề.` / Vancouver `Smith J, Doe AB. Tiêu đề.`:
      cắt ở dấu chấm kết thúc câu, **không** cắt sau chữ viết tắt tên (`A.`, `J.-P.`) hay
      viết tắt thường gặp (`et al.`, `Proc.`, `Vol.`, `Phys.`...);
+   - Springer `Last, F., Last, F.: Tiêu đề. Nơi đăng`: cắt ở dấu `:` ngay sau chữ viết tắt tên;
    - kiểu vật lý không có tiêu đề `A. Einstein, Ann. Phys. 17, 891 (1905)` → chỉ có tác giả + journal.
 4. Phần in nghiêng (`\emph`, `{\em ...}`) trong nơi đăng được lấy làm `journal`.
 
@@ -190,3 +199,18 @@ nguồn có cấu trúc, đổi tên `\cite` mọi biến thể, và một bài 
 
 Hiệu năng (đo trong sandbox): 1 version với 3000 entry `.bib` + 300 `\bibitem`,
 dedup 4 version (5200 dòng) mất khoảng 0.7 giây.
+
+## 9. Bổ sung `.bbl` cho corpus đã crawl (`fetch_bbl.py`)
+
+Lần crawl đầu chỉ giữ `.tex` và `.bib`. Script này chỉ tải lại các version có trích dẫn
+mà không có nguồn tham khảo nào, rồi chép riêng file `.bbl` vào thư mục version và cập
+nhật `kept_files`, `kept_bytes` trong `versions.json`. Không file nào bị ghi đè.
+
+```bash
+python src/fetch_bbl.py --data-dir data --dry-run    # đếm số version, không gửi request
+python src/fetch_bbl.py --data-dir data
+python src/pipeline_m2.py --data-dir data --force
+```
+
+Chạy lại được: version đã có `.bbl` không bị chọn nữa, version mà nguồn không có `.bbl`
+(`logs/bbl_log.csv`) chỉ được hỏi lại với `--retry-no-bbl`.

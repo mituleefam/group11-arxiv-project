@@ -1,7 +1,7 @@
 """Member 1 - Multi-file gathering (Milestone 2).
 
 For one version folder of the Milestone 1 corpus (corpus/<yymm-id>/vN/, which
-holds only the .tex and .bib files of the source), find the file LaTeX
+holds the .tex, .bib and .bbl files of the source), find the file LaTeX
 compiles (the publication root), follow its \\input / \\include chain in
 reading order, and give the document as one text, as the PDF was compiled:
 
@@ -13,6 +13,7 @@ reading order, and give the document as one text, as the PDF was compiled:
                  without comments, \\iffalse parts or comment environments
     g.bib_files  the .bib files named by \\bibliography / \\addbibresource (a document
                  declaring no references gets the folder's .bib files: g.bib_fallback)
+    g.bbl_files  the .bbl files read, see below
     g.unused     the .tex files of the folder that are not compiled
     g.missing    include targets that are not in the folder
     g.embedded_bib  .bib files written in the source by \\begin{filecontents}: name -> text
@@ -45,6 +46,11 @@ How the files are chosen, after how TeX and arXiv read them:
     \\begin{document}, e.g. a subfile) gives only its body.
   * A file is never included inside itself (cycles), and depth and size are
     bounded.
+  * A .bbl is read when it is the document's references, as TeX reads it: named
+    by \\input{x.bbl}, or when \\bibliography{x} has no x.bib (<root>.bbl, then
+    x.bbl, then the only .bbl of the folder). Its thebibliography goes into the
+    text where the command stands; a biblatex .bbl becomes g.embedded_bib. With
+    the .bib present the .bib is used, since it says more about each reference.
 
 status is "ok" for a document; "no_source" when Milestone 1 found no LaTeX
 source for the version (pdf_only, no_tex, not_found, failed or missing
@@ -70,6 +76,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from latex_scan import LITERAL, literal_end, read_group, read_optional, skip_spaces, strip_comments
+from reference_parser.bbl_converter import bbl_parts
 
 OK, NO_SOURCE, NO_TEX = "ok", "no_source", "no_tex"
 USUAL_ROOT_NAMES = ("main", "ms", "paper", "manuscript", "article", "root", "arxiv", "submission")
@@ -91,6 +98,7 @@ _FILECONTENTS = re.compile(r"\\begin[ \t]*\{filecontents\*?\}(?:\[[^\]\n]*\])?\s
 _TEXT_MACRO = re.compile(r"\\(?:(?:new|renew|provide)command\*?\s*\{?\\([A-Za-z@]+)\}?|[gex]?def\s*\\([A-Za-z@]+))"
                          r"\s*\{([^{}#\\\n]*)\}")
 _MACRO_USE = re.compile(r"\\([A-Za-z@]+)\s*(?:\{\})?")
+_USES_REFERENCES = re.compile(r"\\[A-Za-z]*cite[A-Za-z]*\*?(?![A-Za-z@])|\\printbibliography(?![A-Za-z@])")
 NAME_LIMIT, CODE_LIMIT = 2000, 200_000  # how far an argument is looked for
 # Files of the TeX installation or that hold no text of the paper: not a missing part of it
 SYSTEM_INPUTS = (".sty", ".cls", ".clo", ".def", ".cfg", ".fd", "glyphtounicode", "glyphtounicode.tex")
@@ -106,7 +114,8 @@ class Gathered:
     text: str = ""
     bib_files: list[str] = field(default_factory=list)
     bib_names_missing: list[str] = field(default_factory=list)  # \bibliography{x} without x.bib
-    bbl_input: bool = False  # \input{x.bbl}: references in a file Milestone 1 did not keep
+    bbl_input: bool = False  # \input{x.bbl}
+    bbl_files: list[str] = field(default_factory=list)  # the .bbl files read
     embedded_bib: dict[str, str] = field(default_factory=dict)
     bib_fallback: bool = False  # bib_files are the folder's .bib files: the document declares none
     has_thebibliography: bool = False
@@ -117,6 +126,12 @@ class Gathered:
     @property
     def ok(self) -> bool:
         return self.status == OK
+
+    @property
+    def needs_bbl(self) -> bool:
+        """The document has citations and no source of references in the folder."""
+        return (self.ok and not (self.has_thebibliography or self.bib_files or self.embedded_bib or self.bbl_files)
+                and bool(self.bib_names_missing or self.bbl_input or _USES_REFERENCES.search(self.text)))
 
     def summary(self) -> dict:
         """Everything but the text (for logs and parsed/gathering.json)."""
@@ -273,6 +288,7 @@ class _Gatherer:
         self.f = folder
         self.result = Gathered(OK)
         self.only: set[str] | None = None  # \includeonly names
+        self.bbl_read: set[str] = set()
         self.size = 0
         self._macros: dict[str, str] | None = None
 
@@ -307,6 +323,40 @@ class _Gatherer:
             out.append((name, path, case))
         return out
 
+    # -- .bbl ---------------------------------------------------------------------
+    def read_bbl(self, rel: str) -> str:
+        """The thebibliography text of the .bbl `rel`, once; a biblatex .bbl goes
+        to embedded_bib."""
+        if rel in self.bbl_read:
+            return ""
+        self.bbl_read.add(rel)
+        raw, utf8 = read_text(self.f.paths[rel])
+        if not utf8:
+            self.result.problems.append(f"{rel}: not UTF-8, read as Latin-1")
+        bibliography, bibtex = bbl_parts(raw)
+        if bibtex:
+            self.result.embedded_bib[rel] = bibtex
+        if bibliography or bibtex:
+            self.result.bbl_files.append(rel)
+        else:
+            self.result.problems.append(f"{rel}: no reference found in this .bbl")
+        return bibliography
+
+    def find_bbl(self, names: list[str]) -> str | None:
+        """The .bbl LaTeX would read for a \\bibliography without its .bib files."""
+        root = self.result.root or ""
+        wanted = [posixpath.splitext(root)[0] + ".bbl"]
+        for name in names:
+            stem = self.plain_name(name, None).strip()
+            stem = stem[:-4] if stem.lower().endswith(".bib") else stem
+            wanted += [stem + ".bbl", posixpath.join(posixpath.dirname(root), stem + ".bbl")]
+        for candidate in wanted:
+            found = self.f.lower.get(posixpath.normpath(candidate).lower())
+            if found:
+                return found
+        every = [rel for rel in self.f.paths if rel.lower().endswith(".bbl")]
+        return every[0] if len(every) == 1 else None
+
     def expand(self, rel: str, stack: tuple[str, ...]) -> str:
         """The text of `rel` with its includes replaced, recursively."""
         if rel not in self.result.files:
@@ -321,6 +371,7 @@ class _Gatherer:
             out.append(text[pos:inc.start])
             pos = inc.end
             if inc.cmd in BIB_COMMANDS:
+                unresolved = []
                 for name, path, case in self.targets(rel, inc):
                     plain = self.plain_name(name, None).strip()
                     embedded = next((k for k in (plain, plain + ".bib") if k in self.f.embedded), None)
@@ -328,9 +379,15 @@ class _Gatherer:
                         self.result.embedded_bib[embedded] = self.f.embedded[embedded]
                     elif path and path not in self.result.bib_files:
                         self.result.bib_files.append(path)
-                    elif not path and name not in self.result.bib_names_missing:
-                        self.result.bib_names_missing.append(name)
+                    elif not path:
+                        unresolved.append(name)
+                        if name not in self.result.bib_names_missing:
+                            self.result.bib_names_missing.append(name)
                 out.append(text[inc.start:inc.end])  # left for the bibliography module
+                if inc.names and len(unresolved) == len(inc.names):
+                    bbl = self.find_bbl(unresolved)
+                    if bbl:
+                        out.append("\n" + self.read_bbl(bbl) + "\n")
                 continue
             if inc.cmd == "includeonly":
                 self.only = {n.strip() for n in inc.names}
@@ -353,6 +410,14 @@ class _Gatherer:
                     continue
                 if case:
                     self.result.problems.append(f"{rel}: '{name}' found as {path} (case differs)")
+                if path.lower().endswith(".bbl"):
+                    self.result.bbl_input = True
+                    out.append("\n" + self.read_bbl(path) + "\n")
+                    continue
+                if path.lower().endswith(".bib"):  # \input{refs.bib}: references, not text
+                    if path not in self.result.bib_files:
+                        self.result.bib_files.append(path)
+                    continue
                 if path in stack:
                     self.result.problems.append(f"{rel}: cycle, {path} includes itself")
                     continue
@@ -374,7 +439,8 @@ class _Gatherer:
         found = set()
         for inc in _parse_includes(self.f.stripped(rel)):
             if inc.cmd not in BIB_COMMANDS and inc.cmd != "includeonly":
-                found |= {path for _, path, _ in self.targets(rel, inc, root=rel) if path}
+                found |= {path for _, path, _ in self.targets(rel, inc, root=rel)
+                          if path and path.lower().endswith(".tex")}
         return found
 
     def closure(self, rel: str, graph: dict[str, set[str]]) -> set[str]:
@@ -438,13 +504,19 @@ class _Gatherer:
         declared = self.result.bib_files or self.result.embedded_bib
         if (self.result.bib_names_missing or self.result.bbl_input) and not self.result.has_thebibliography \
                 and not declared:
-            self.result.problems.append("references only in a .bbl file, which Milestone 1 did not keep")
+            self.result.problems.append("references only in a .bbl file, which is not in this version's folder")
         if not (self.result.has_thebibliography or declared or self.result.bib_names_missing
                 or self.result.bbl_input):
             self.result.bib_files = [rel for rel in self.f.paths if rel.lower().endswith(".bib")]
             if self.result.bib_files:
                 self.result.bib_fallback = True
                 self.result.problems.append("no bibliography declared: the .bib files of the folder used as a fallback")
+            else:  # \printbibliography with no \addbibresource read: only a .bbl can hold the references
+                bbl = self.find_bbl([])
+                if bbl:
+                    self.result.text += "\n" + self.read_bbl(bbl) + "\n"
+                    self.result.has_thebibliography = "\\begin{thebibliography}" in self.result.text.replace(" ", "")
+                    self.result.problems.append(f"no bibliography declared: {bbl} used as a fallback")
         self.result.problems = self.f.problems + self.result.problems
         return self.result
 
@@ -465,7 +537,7 @@ def gather(folder: Path, status: str = "success") -> Gathered:
 # ---------------------------------------------------------------------------
 
 SURVEY_FIELDS = ["arxiv_id", "version", "status", "root", "files", "unused", "missing",
-                 "bib_files", "bib_names_missing", "has_thebibliography", "chars", "seconds", "problems"]
+                 "bib_files", "bib_names_missing", "bbl_files", "has_thebibliography", "chars", "seconds", "problems"]
 
 
 def _version_statuses(paper_dir: Path) -> dict[str, str]:
@@ -486,7 +558,7 @@ def _survey_paper(paper_dir: str) -> list[dict]:
         rows.append({"arxiv_id": paper_dir.name, "version": version, "status": g.status,
                      "root": g.root or "", "files": len(g.files), "unused": len(g.unused),
                      "missing": len(g.missing), "bib_files": len(g.bib_files),
-                     "bib_names_missing": len(g.bib_names_missing),
+                     "bib_names_missing": len(g.bib_names_missing), "bbl_files": len(g.bbl_files),
                      "has_thebibliography": g.has_thebibliography, "chars": len(g.text),
                      "seconds": round(time.perf_counter() - started, 4),
                      "problems": " | ".join(g.problems)[:2000]})
@@ -517,6 +589,7 @@ def survey(data_dir: Path, out: Path, workers: int | None = None, limit: int | N
                                   ("iffalse_unclosed", "\\iffalse without")):
                     counts[key] += test in row["problems"]
                 counts["with_missing_inputs"] += row["missing"] > 0
+                counts["references_from_bbl"] += row["bbl_files"] > 0
                 counts["with_unused_tex"] += row["unused"] > 0
                 counts["multi_file"] += row["files"] > 1
     counts["seconds"] = round(time.perf_counter() - started, 1)

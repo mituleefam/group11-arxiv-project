@@ -1,7 +1,7 @@
 # arXiv Crawler — Milestone 1 (Group 11)
 
 Crawls the arXiv papers of an assigned ID range: every version's LaTeX source
-(`.tex` / `.bib` only, figures removed), the paper metadata, and the reference
+(`.tex`, `.bib` and `.bbl` only, figures removed), the paper metadata, and the reference
 metadata from Semantic Scholar.
 
 ```
@@ -162,7 +162,7 @@ which the other stages read).
 ├── corpus/<yymm-id>/            e.g. corpus/2604-05535/
 │   ├── metadata.json            title, authors, submission/revised dates, venue, per-version metadata
 │   ├── versions.json            download state of every version
-│   ├── v1/, v2/, ...            .tex/.bib files with the archive's own sub-folders
+│   ├── v1/, v2/, ...            .tex/.bib/.bbl files with the archive's own sub-folders
 │   ├── references_all.json      every reference returned by Semantic Scholar
 │   └── references.json          references with an arXiv ID
 └── logs/                        CSV logs, see below
@@ -210,7 +210,7 @@ lost if a run stops). Times are UTC ISO 8601, durations in seconds, sizes in byt
 | `downloaded_bytes`                                     | Size of the file received from arXiv (compressed).                                                                  |
 | `original_bytes`                                       | Total **uncompressed** size of every file in the source.                                                            |
 | `image_bytes`                                          | Part of `original_bytes` that are figure files.                                                                     |
-| `kept_bytes`                                           | Total size of the kept `.tex`/`.bib` files (uncompressed, same basis as `original_bytes`).                          |
+| `kept_bytes`                                           | Total size of the kept `.tex`/`.bib`/`.bbl` files (uncompressed, same basis as `original_bytes`).                          |
 | `kept_files`, `tex_files`, `bib_files`                 | Number of kept files, of which `.tex` and `.bib`.                                                                   |
 | `skipped_files`                                        | `.tex`/`.bib` members not written (unsafe path, link, name refused by the file system); details in `versions.json`. |
 | `error`                                                | Empty on success.                                                                                                   |

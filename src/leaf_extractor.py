@@ -20,8 +20,12 @@ kinds of smallest element:
 
 The \\begin and \\end (with its optional arguments) of an environment that
 hierarchy.py reads through (theorem, proof, remark, quote...) are dropped from
-the prose; their text stays, and so do the \\cite, \\ref and \\label written in
-those optional arguments (\\begin{assumption}[LICQ \\citep{a}] keeps \\citep{a}). A paragraph holds no section and no list.
+the prose; their text stays, and so do the \\cite and \\ref written in those
+optional arguments (\\begin{assumption}[LICQ \\citep{a}] keeps \\citep{a}).
+A \\label and a line break \\\\ are dropped from the prose too: they are not part
+of what a sentence says, and a sentence that only differs by them between two
+versions must stay one element. A figure or formula keeps its \\label.
+A paragraph holds no section and no list.
 """
 
 from __future__ import annotations
@@ -47,6 +51,9 @@ _FIGURE = re.compile(r"\\begin\s*\{(" + _NAMES + r")\}|\\includegraphics\*?(?![A
 _ENV_MARK = re.compile(r"\\(begin|end)\s*\{[^{}]+\}(?:\s*\[[^\]\n]*\])*")
 _KEPT_IN_OPTIONS = re.compile(r"\\(?:[A-Za-z]*cite[A-Za-z]*|ref|eqref|autoref|cref|Cref|pageref|nameref|label)"
                               r"\*?(?:\[[^\]]*\])*\{[^{}]*\}")
+
+_LABEL = re.compile(r"\\label\s*\{[^{}]*\}")
+_LINE_BREAK = re.compile(r"\\\\\*?(?:\[[^\]\n]*\])?")
 
 
 def _env_mark(m: re.Match) -> str:
@@ -80,15 +87,20 @@ def _figure_spans(text: str, skip: list) -> list[tuple[int, int]]:
     return spans
 
 
+def _tidy(prose: str) -> str:
+    """Prose outside formulas without environment marks, \\label and line breaks."""
+    return _LINE_BREAK.sub(" ", _LABEL.sub("", _ENV_MARK.sub(_env_mark, prose)))
+
+
 def _prose(text: str) -> list[str]:
     """Sentences of the text between two blocks, without the \\begin / \\end of
     the environments read through (never inside a formula: $\\begin{array}...$)."""
     out, pos = [], 0
     for span in math_spans(text, literals=True):
-        out.append(_ENV_MARK.sub(_env_mark, text[pos:span.start]))
+        out.append(_tidy(text[pos:span.start]))
         out.append(text[span.start:span.end])
         pos = span.end
-    out.append(_ENV_MARK.sub(_env_mark, text[pos:]))
+    out.append(_tidy(text[pos:]))
     return split_sentences("".join(out))
 
 

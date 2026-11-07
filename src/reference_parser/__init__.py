@@ -1,6 +1,7 @@
 """Member 3 - Milestone 2: reference extraction and BibTeX standardization.
 
     ref_text.py          text helpers (LaTeX -> Unicode, DOI / arXiv / URL)
+    bbl_converter.py     bbl_parts(text): the references of a .bbl file
     bibitem_parser.py    parse(text, bib_files): \\bibitem, amsrefs, .bib entries of one version
     bibtex_converter.py  convert(entries): rows of the bibtex table
     dedup_bibtex.py      dedup(by_version): one row per reference, key renames

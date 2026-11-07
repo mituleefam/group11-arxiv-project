@@ -179,6 +179,9 @@ def collect(data_dir: Path, *, limit: int = 0,
         kinds_occurrences["document"] += root_occ
         for status in gathering.values():
             version_status[str(status.get("status", "unknown"))] += 1
+            counters["versions_references_from_bbl"] += bool(status.get("bbl_files"))
+            counters["versions_references_in_missing_bbl"] += any(
+                "only in a .bbl" in str(problem) for problem in status.get("problems") or [])
         for row in bibtex:
             for field in ("title", "authors", "year", "doi", "journal", "url"):
                 if row.get(field) not in (None, "", []):
@@ -217,6 +220,10 @@ def collect(data_dir: Path, *, limit: int = 0,
     for status in sorted(version_status):
         add(f"version_status_{status}", version_status[status])
     add("versions_with_tex", version_status["ok"])
+    add("versions_references_from_bbl", counters["versions_references_from_bbl"],
+        note="References read from a .bbl file of the source")
+    add("versions_references_in_missing_bbl", counters["versions_references_in_missing_bbl"],
+        note="The document names a .bbl or .bib that is not in the folder: its references are lost")
     for status, count in sorted(Counter(str(v.get("status", "unknown")) for v in m1_manifest.values()).items()):
         add(f"m1_discovery_status_{status}", count, source="M1_manifest")
     add("elements_occurrences_before_dedup", counters["elements_occurrences_before_dedup"],

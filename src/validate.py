@@ -229,7 +229,7 @@ def validate(data_dir: Path, expected_ids: set[str] | None = None,
                 continue
             files = source_files(folder)
             invalid_version = False
-            forbidden = [str(p.relative_to(folder)) for p in files if p.is_symlink() or p.suffix.lower() not in {".tex", ".bib"}]
+            forbidden = [str(p.relative_to(folder)) for p in files if p.is_symlink() or p.suffix.lower() not in {".tex", ".bib", ".bbl"}]
             if forbidden:
                 invalid_version = True
                 add(arxiv_id, version, "source_types", "FAIL", f"Unexpected files: {forbidden[:6]}")
@@ -278,7 +278,7 @@ def validate(data_dir: Path, expected_ids: set[str] | None = None,
                               not isinstance(name, str) or not name or
                               PurePosixPath(name).is_absolute() or
                               any(part in (".", "..") for part in PurePosixPath(name).parts) or
-                              "\\" in name or PurePosixPath(name).suffix.lower() not in (".tex", ".bib")]
+                              "\\" in name or PurePosixPath(name).suffix.lower() not in (".tex", ".bib", ".bbl")]
                     if unsafe:
                         invalid_version = True
                         add(arxiv_id, version, "kept_paths", "FAIL", f"Invalid recorded paths: {unsafe[:6]}")

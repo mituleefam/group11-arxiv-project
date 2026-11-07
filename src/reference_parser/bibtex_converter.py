@@ -229,6 +229,26 @@ def person_name(s: str) -> str | None:
     return _join(" ".join(words[start:]), " ".join(words[:start]))
 
 
+_INITIALS_ONLY = re.compile(r"(?:[A-ZÀ-ɏ]\.-?)*[A-ZÀ-ɏ]\.?")  # the last "." of a list was stripped
+
+
+def _name_initial_pairs(s: str) -> list[str]:
+    """"Bai, J., d'Avila Garcez, A., Yang, Yang, H.": a comma stands inside a name
+    too, so a piece holding only initials belongs to the piece before it."""
+    pieces = [p.strip() for p in s.split(",") if p.strip()]
+    if not any(_INITIALS_ONLY.fullmatch(p) for p in pieces):
+        return []
+    names, k = [], 0
+    while k < len(pieces):
+        if k + 1 < len(pieces) and _INITIALS_ONLY.fullmatch(pieces[k + 1]):
+            names.append(_join(pieces[k], pieces[k + 1]))
+            k += 2
+        else:
+            names.append(pieces[k])
+            k += 1
+    return names
+
+
 def text_authors(s: str) -> list[str]:
     """Authors of a free-text author list, as "Last, First"."""
     s = _EDS.sub("", latex_to_text(s)).strip(" .,;:")
@@ -252,7 +272,7 @@ def text_authors(s: str) -> list[str]:
     # "Vaswani, Ashish and Shazeer, Noam": BibTeX style written out
     if re.search(r"\s+and\s+", s) and all(p.count(",") == 1 for p in _AND.split(s)):
         return [_join(*p.split(",", 1)) for p in _AND.split(s)]
-    return [n for n in (person_name(p) for p in _NAME_SEP.split(s)) if n]
+    return _name_initial_pairs(s) or [n for n in (person_name(p) for p in _NAME_SEP.split(s)) if n]
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +385,12 @@ _VANCOUVER = re.compile(r"(?:[A-ZÀ-ɏ][\w'\-]+(?:\s+[A-ZÀ-ɏ][\w'\-]+)?\s+[A-Z
                         r"[A-ZÀ-ɏ][\w'\-]+(?:\s+[A-ZÀ-ɏ][\w'\-]+)?\s+[A-Z]{1,3}"
                         r"(?:,?\s*et\s+al)?\.\s+")
 
+# Springer (LNCS): "Last, F., Last, F.M.: Title. Venue". Only the colon after an
+# initial or "et al." ends the authors: "Smith, J. Title: a subtitle" stays as it was.
+_SPRINGER = re.compile(r"^\s*[^\s,:][^,:]*,\s*[A-ZÀ-ɏ][^:]*?"
+                       r"(?:[A-ZÀ-ɏ]\.|\bet\.?\s+al\.?)(?:\s*\(eds?\.\))?:\s")
+_EDITORS = re.compile(r"^[^()]{0,600}\(eds?\.\)\s*")  # the editors before a book's name
+
 
 def _looks_like_names(piece: str) -> bool:
     words = piece.replace(" and ", " ").split()
@@ -410,6 +436,7 @@ def _strip_year(s: str) -> str:
 def _clean_venue(s: str) -> str | None:
     s = s.replace("\x05", "").replace("\x06", "")
     s = re.sub(r"^\s*(?:in|In|IN)\s*:?\s+", "", s.strip(" ,.;:"))
+    s = _EDITORS.sub("", s)
     s = _IDS.sub("", s)
     m = _VENUE_CUT.search(s)
     if m and m.start() > 3:
@@ -433,7 +460,7 @@ def _classify(venue: str, text: str, has_title: bool) -> str:
                  r"advances\s+in\s+neural|\b(?:neurips|nips|icml|iclr|cvpr|iccv|eccv|acl|emnlp|naacl|coling|aaai|ijcai|kdd|"
                  r"sigir|sigmod|vldb|icde|www|interspeech|icassp|miccai|uai|aistats|colt|icra|iros|"
                  r"wsdm|cikm|recsys|chi|uist|osdi|sosp|nsdi|isca|focs|stoc|soda)\b", low_v) \
-            or re.match(r"\s*in\s", (venue or "").lower()):
+            or re.match(r"\s*in\b", (venue or "").lower()):
         return "inproceedings"
     if re.search(r"journal|\bj\.|trans\.|transactions|letters|\blett\.|review|\brev\.|annals|\bann\.|"
                  r"magazine|quarterly|bulletin|\bvol\.|volume|nature|science\b|\bplos\b|"
@@ -508,7 +535,8 @@ def parse_free_text(raw: str, label: str | None = None) -> dict:
         ends = _sentence_ends(rest)
         title, venue = (rest[:ends[0]], rest[ends[0]:]) if ends else (rest, "")
     else:
-        cut = _authors_end(text)
+        springer = _SPRINGER.match(text)
+        cut = springer.end() if springer else _authors_end(text)
         if cut is None:
             ends = _sentence_ends(text)
             cut = ends[0] if ends else None
@@ -526,7 +554,7 @@ def parse_free_text(raw: str, label: str | None = None) -> dict:
             else:
                 venue = ", ".join(rest)
         else:
-            authors_s, rest = text[:cut], text[cut:].lstrip(" .,:")
+            authors_s, rest = text[:cut].rstrip(" :"), text[cut:].lstrip(" .,:")
             italic = re.match(r"\s*\x05(.+?)\x06", rest)
             if italic:                                 # Title in italics right after the authors (books)
                 title, venue = italic.group(1), rest[italic.end():]

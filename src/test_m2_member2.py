@@ -202,10 +202,10 @@ class LeafExtractorTest(unittest.TestCase):
     def test_every_optional_argument_of_an_environment_goes(self):
         for text in ("\\begin{lemmaE}[][end,restate]\\label{a} Suppose it holds.\\end{lemmaE}",
                      "\\begin{lemma}[Informal]\\label{a} Suppose it holds.\\end{lemma}"):
-            self.assertEqual(extract_leaves(normalize(clean(text))), [("sentence", "\\label{a} Suppose it holds.")])
+            self.assertEqual(extract_leaves(normalize(clean(text))), [("sentence", "Suppose it holds.")])
         text = "\\begin{assumption}[LICQ \\citep{aragon2019}]\\label{ass} The gradients are independent.\\end{assumption}"
         self.assertEqual(extract_leaves(normalize(clean(text))),
-                         [("sentence", "\\citep{aragon2019} \\label{ass} The gradients are independent.")])
+                         [("sentence", "\\citep{aragon2019} The gradients are independent.")])
 
     def test_other_figures(self):
         kinds = [k for k, _ in extract_leaves("Code: \\begin{verbatim}x. Y.\\end{verbatim} "
