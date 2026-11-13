@@ -616,7 +616,7 @@ aggregation recomputes dedup rates from summed counts, adds sequential wall
 times **including export**, uses the highest sampled RAM, and measures final
 bytes only from the **merged** tables. It exits nonzero when coverage,
 benchmark, output or validation is incomplete. Do not sum member percentages
-or summed RAM peaks. See `docs/M2_FULL_FIX_REVIEW.md` for the full pre-run audit.
+or summed RAM peaks.
 
 ### 8.4. Why some references come from a `.bbl`
 
@@ -653,10 +653,21 @@ from a `.bbl`, and `versions_references_in_missing_bbl` those that name a `.bib`
 in the folder. Keep data, tables and logs out of this repository: the report reads only the aggregated numbers.
 
 See `docs/m2_references.md` for the reference steps, `docs/m2_member4.md` for validation,
-statistics and benchmark, and `docs/M2_FULL_FIX_REVIEW.md` for the mandatory M2 corrections.
+statistics and benchmark.
 
-For the GBao full-run warning audit and post-run validation triage, see `docs/M2_GBAO_POSTRUN_REVIEW.md` and `src/audit_m2_warnings.py`.
+### 8.7. Looking into the WARN rows
 
-### Milestone 2 — Review năm nhóm cảnh báo sau benchmark
+After `validate_m2.py`, two read-only tools help decide whether a `WARN` is a source problem, a parser
+problem or only a validator heuristic. Neither changes the corpus, the tables or the validation statuses.
 
-Xem [M2 warning diagnosis guide](docs/M2_FIVE_WARNINGS_FIX_GUIDE.md) để kiểm tra citation, cây TeX rỗng, root gathering, structural leaves và encoding trên corpus thực tế. Công cụ `src/diagnose_m2_warnings.py` giữ nguyên trạng thái validator, chỉ bổ sung bằng chứng.
+```bash
+python src/audit_m2_warnings.py --data-dir DATA_DIR      # logs/warning_triage_m2.csv, warning_summary_m2.json
+python src/diagnose_m2_warnings.py --data-dir DATA_DIR   # logs/warning_evidence_m2.csv, warning_evidence_summary_m2.json
+python src/diagnose_m2_warnings.py --data-dir DATA_DIR --paper-ids 2604.07041 2604.08146
+```
+
+`audit_m2_warnings.py` groups the rows of `validation_report_m2.csv`; `diagnose_m2_warnings.py` reads the
+version folders, `parsed/` and the `.bib`/`.bbl` files and records the evidence of each case
+(for example `content_present_but_no_hierarchy_edges` for an empty tree whose source has text).
+A confirmed parser defect gets a regression test and a new `--force` run; zero `FAIL` alone does not
+prove that every citation was matched.

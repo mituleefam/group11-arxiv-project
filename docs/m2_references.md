@@ -230,4 +230,4 @@ Chạy lại được: version đã có `.bbl` không bị chọn nữa, version
 - `bbl_converter.py` nhận thêm amsrefs (`\bib{key}{type}{...}`) và harvard (`\harvarditem`). Dạng không nhận diện phải được ghi nhận để kiểm tra thủ công, không tự tạo citation key.
 - `dedup_bibtex.py` không dùng tiêu đề không đặc trưng như `(ATLAS Collaboration)`, `accessed...` hoặc chuỗi số làm căn cứ hợp nhất. Tiêu đề có phiên bản mô hình khác nhau (`GPT-5.4` / `GPT-4 Turbo` / `GPT-3.5`) không được gộp chỉ vì khóa giống nhau. Trường hợp cùng citation key bị dùng cho hai tài liệu khác nhau vẫn cần review thủ công, vì không thể suy ra đổi tên `\cite` toàn cục một cách đáng tin cậy.
 - `bibtex_converter.py` mở rộng một số macro tên tạp chí thiên văn trong trường `journal` và nhận diện năm từ 1600 đến năm hiện hành+1, tránh nhận nhầm đầu mã arXiv thành năm.
-- Xem `M2_FULL_FIX_REVIEW.md` và `src/test_m2_full_fixes.py` để tái lập regression tests.
+- Xem `src/test_m2_full_fixes.py` để tái lập regression tests.

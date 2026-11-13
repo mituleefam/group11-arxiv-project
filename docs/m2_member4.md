@@ -50,6 +50,6 @@ python src/statistics_m2.py --data-dir data --limit 5
 2. **Validation:** Kiểm tra đúng root, chu trình, orphan node, schema Arrow/Parquet, các phiên bản không có TeX và citation key chưa khớp. Citation thiếu được ghi `WARN`, không mặc định là lỗi parser.
 3. **Statistics:** “Trước dedup” của elements là **số lần xuất hiện** (số cạnh + root), “sau” là **số element phân biệt**; tỷ lệ giảm số bản ghi **không phải** tỷ lệ giảm dung lượng file. BibTeX before-dedup chỉ có khi `reference_log.csv` từ Member 3 đầy đủ.
 4. **Benchmark:** `benchmark_m2.py` tái sử dụng `benchmark.py` M1, không chỉnh file M1. RAM peak là **giá trị lớn nhất trong các mẫu đo**, không phải đỉnh tuyệt đối; số đo có thể tính trùng trang nhớ dùng chung giữa các process.
-5. **Tính tương thích:** Bộ sửa M2 tổng thể có thay đổi `gatherer.py`, `pipeline_m2.py`, các module chuẩn hóa và BibTeX của các thành viên khác. Xem chi tiết tại `M2_FULL_FIX_REVIEW.md`; M1 `corpus_statistics.py` không thay đổi. Sau khi merge, chạy lại integration test, validation và benchmark toàn corpus.
+5. **Tính tương thích:** Bộ sửa M2 tổng thể có thay đổi `gatherer.py`, `pipeline_m2.py`, các module chuẩn hóa và BibTeX của các thành viên khác. Các thay đổi có test hồi quy trong `src/test_m2_full_fixes.py`; M1 `corpus_statistics.py` không thay đổi. Sau khi merge, chạy lại integration test, validation và benchmark toàn corpus.
 
 Các file CSV/log và Parquet thuộc dữ liệu chạy, **không commit toàn bộ corpus lên GitHub**. Member 5 chỉ cần lấy bảng thống kê/log đã chọn để dựng biểu đồ Jupyter Book.

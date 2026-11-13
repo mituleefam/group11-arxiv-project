@@ -26,6 +26,8 @@ How the files are chosen, after how TeX and arXiv read them:
     cover letter, an old draft), come in this order, over what each one
     compiles: a class other than standalone/subfiles, \\begin{document}, a
     usual name (main, ms, paper...), the top folder, the most files, the largest.
+    A \\documentclass[f]{subfiles} file nobody includes, whose f.tex has an
+    empty body (only the preamble), is the root and f.tex lends it the preamble.
     Without any \\documentclass, the only .tex file, or else the largest file
     with \\begin{document}, or else the largest one nobody includes, is taken
     and the guess is reported.
@@ -41,7 +43,8 @@ How the files are chosen, after how TeX and arXiv read them:
     folder. \\includeonly is honoured.
   * What TeX does not read is not followed: comments, \\iffalse ... \\fi,
     comment environments (latex_scan.strip_comments), anything after
-    \\endinput; verbatim text is copied as it is.
+    \\endinput (but not an \\endinput that is only named, as in
+    \\let\\X\\endinput or inside a braced definition); verbatim text is copied as it is.
   * An included file that is a document itself (\\documentclass and
     \\begin{document}, e.g. a subfile) gives only its body.
   * A file is never included inside itself (cycles), and depth and size are
@@ -88,6 +91,9 @@ _CLASS = re.compile(r"\\document(?:class|style)(?![A-Za-z@])\s*(?:\[[^\]]*\])?\s
 _BEGIN_DOC = re.compile(r"\\begin\s*\{document\}")
 _END_DOC = re.compile(r"\\end\s*\{document\}")
 _ENDINPUT = re.compile(r"\\endinput(?![A-Za-z@])")
+# \endinput named as the value of \let (\let\ENDGRAPH\endinput), not executed there
+_LET_BEFORE = re.compile(r"\\let\s*\\[A-Za-z@]+\s*=?\s*$")
+_SUBFILES_MAIN = re.compile(r"\\documentclass\s*\[([^\]]*)\]\s*\{\s*subfiles\s*\}")
 _INCLUDE = re.compile(
     LITERAL + r"|\\(?P<cmd>input|include|subfile|InputIfFileExists|import|subimport|inputfrom|includefrom|"
     r"subinputfrom|subincludefrom|includeonly|bibliography|nobibliography|addbibresource|"
@@ -194,7 +200,7 @@ class _Folder:
                 for name, content in _FILECONTENTS.findall(text):
                     self.embedded.setdefault(name.strip(), content)
                 text = _FILECONTENTS.sub("", text)
-            m = _ENDINPUT.search(text)
+            m = _executed_endinput(text)
             if m:  # TeX still reads the rest of that line
                 eol = text.find("\n", m.end())
                 text = text[:m.start()] + (text[m.end():eol] if eol >= 0 else text[m.end():])
@@ -282,6 +288,23 @@ def _parse_includes(text: str) -> list[_Include]:
         pos = max(end, m.end())
 
 
+def _executed_endinput(text: str):
+    """The first \\endinput TeX really executes: not the value of a \\let
+    (\\let\\ENDGRAPH\\endinput) and not inside a braced definition
+    (\\def\\stop{\\endinput}), which only name the command. None if there is none."""
+    depth, pos = 0, 0
+    for m in _ENDINPUT.finditer(text):
+        for ch in re.finditer(r"\\.|[{}]", text[pos:m.start()], re.S):
+            if ch.group() == "{":
+                depth += 1
+            elif ch.group() == "}":
+                depth = max(depth - 1, 0)
+        pos = m.start()
+        if depth == 0 and not _LET_BEFORE.search(text[max(0, m.start() - 80):m.start()]):
+            return m
+    return None
+
+
 def _body(text: str) -> str | None:
     """What is between \\begin{document} and \\end{document}, or None."""
     begin = _BEGIN_DOC.search(text)
@@ -289,6 +312,12 @@ def _body(text: str) -> str | None:
         return None
     end = _END_DOC.search(text, begin.end())
     return text[begin.end():end.start() if end else len(text)]
+
+
+def _empty_body(text: str) -> bool:
+    """True when \\begin{document} ... \\end{document} holds no text, only commands."""
+    body = _body(text)
+    return body is not None and not re.sub(r"\\[A-Za-z@]+\*?|[{}\[\]\s]", "", body)
 
 
 class _Gatherer:
@@ -453,6 +482,18 @@ class _Gatherer:
                           if path and path.lower().endswith(".tex")}
         return found
 
+    def preamble_file(self, rel: str, name: str) -> str | None:
+        """The .tex file named in \\documentclass[name]{subfiles} of `rel`, or None."""
+        if not name or "\\" in name:
+            return None
+        here = posixpath.dirname(rel)
+        for base in (here, ""):
+            for cand in (name, name + ".tex"):
+                path = posixpath.normpath(posixpath.join(base, cand))
+                if not path.startswith("..") and path in self.f.paths and path.lower().endswith(".tex"):
+                    return path
+        return None
+
     def closure(self, rel: str, graph: dict[str, set[str]]) -> set[str]:
         seen, todo = {rel}, [rel]
         while todo:
@@ -473,6 +514,17 @@ class _Gatherer:
             text = self.f.stripped(rel)
             cls = _CLASS.search(text)
             info[rel] = (cls.group(1) if cls else None, bool(_BEGIN_DOC.search(text)))
+        # \documentclass[main-source.tex]{subfiles} in a file nobody includes, with
+        # main-source.tex only a preamble (empty body): the subfiles file is what
+        # the authors compile, and main-source.tex only lends it its preamble.
+        for rel in tex:
+            m = _SUBFILES_MAIN.search(self.f.stripped(rel))
+            if m is None or rel in included:
+                continue
+            main = self.preamble_file(rel, m.group(1).strip())
+            if main and main != rel and _empty_body(self.f.stripped(main)):
+                graph[rel] = graph[rel] | {main}
+                included.add(main)
         candidates = [rel for rel in tex if info[rel][0] is not None]
         if candidates:
             reach = {rel: self.closure(rel, graph) for rel in tex if rel not in included}
