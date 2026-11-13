@@ -176,10 +176,17 @@ def parse_paper(task: dict) -> dict:
                 bib_files.update(g.embedded_bib)
                 by_version[number] = comp.convert_references(comp.parse_references(g.text, bib_files))
         bib_rows, rename = comp.dedup_references(by_version) if by_version else ([], {})
+        # A cited spelling can differ in case from an unchanged BibTeX key;
+        # ordinary dedup alone does not emit such a rename (Zhang2025 -> zhang2025).
+        # Resolve only unambiguous aliases before normalizing the text.
+        from reference_parser.citation_updater import extend_case_aliases
+        rename = extend_case_aliases((g.text for g in gathered.values() if g.ok),
+                                     (r["citation_key"] for r in bib_rows), rename)
 
         registry = comp.Registry(arxiv_id)
         edges, kinds, problems = [], Counter(), {}
         for number in sorted(gathered):
+            registry.start_version(number)
             root = registry.element_id("document", f"Version {number} root", None, 0)
             g = gathered[number]
             problems[number] = list(g.problems)
@@ -474,6 +481,12 @@ def main(argv=None) -> int:
             print("Tables not written: pyarrow is missing (pip install pyarrow)")
             return 1
         print("[tables] " + ", ".join(f"{k}={v}" for k, v in sorted(exported.items())) + f" | {out}")
+    incomplete = [p["arxiv_id"] for p in papers
+                  if done.get(p["arxiv_id"], {}).get("status") != "done"]
+    if incomplete:
+        print(f"[m2] INCOMPLETE: {len(incomplete)}/{len(papers)} paper(s) failed or not parsed; "
+              f"first IDs: {incomplete[:10]}", file=sys.stderr)
+        return 1
     return 0
 
 

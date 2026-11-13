@@ -174,6 +174,14 @@ def _clean(text: str) -> str:
                 dimen = _DIMEN.match(text, pos)
                 pos = dimen.end() if dimen else pos
                 out.append(_HOLE)
+            elif bare == "texorpdfstring":
+                first = read_group(text, pos, LIMIT)
+                second = read_group(text, first[1], LIMIT) if first else None
+                if first and second:
+                    out.append(_clean(first[0] or second[0]))
+                    pos = second[1]
+                else:
+                    out.append(m.group(0))
             elif name in UNWRAP:
                 start = _skip(text, pos, *UNWRAP[name])
                 group = read_group(text, start, LIMIT)

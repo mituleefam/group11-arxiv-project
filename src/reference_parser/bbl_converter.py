@@ -18,10 +18,12 @@ from __future__ import annotations
 
 import re
 
-from latex_scan import read_group, strip_comments
+from latex_scan import read_group, read_optional, strip_comments
 
 LIMIT = 500_000  # how far an argument is looked for
 
+_HARVARD = re.compile(r"\\harvarditem(?![A-Za-z@])\s*")
+_AMSREF = re.compile(r"\\bib\*?(?![A-Za-z@])\s*(?=\{)")
 _THEBIB = re.compile(r"\\begin\s*\{thebibliography\}.*?(?:\\end\s*\{thebibliography\}|\Z)", re.S)
 _ENTRY = re.compile(r"\\entry\s*(?=\{)")
 _END_ENTRY = re.compile(r"\\endentry(?![A-Za-z@])")
@@ -120,16 +122,51 @@ def _biblatex_to_bibtex(text: str) -> str:
         out.append(f"@{kind[0].strip()}{{{key[0].strip()},\n{lines}}}\n\n")
 
 
+def _convert_harvard_items(text: str) -> str:
+    r"""Map harvard.sty \harvarditem[short]{authors}{year}{key} to \bibitem.
+
+    The free text that follows an item stays in place, so the existing
+    Bibitem parser can extract its title/venue normally. Invalid declarations
+    are left untouched rather than assigning a fabricated citation key.
+    """
+    out, pos = [], 0
+    for match in _HARVARD.finditer(text):
+        if match.start() < pos:
+            continue
+        at = match.end()
+        opt = read_optional(text, at, LIMIT)
+        if opt:
+            at = opt[1]
+        authors = read_group(text, at, LIMIT)
+        year = read_group(text, authors[1], LIMIT) if authors else None
+        key = read_group(text, year[1], LIMIT) if year else None
+        if not key or not key[0].strip():
+            continue
+        out.append(text[pos:match.start()])
+        out.append(f"\\bibitem{{{key[0].strip()}}} {authors[0]} ({year[0]}). ")
+        pos = key[1]
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def bbl_parts(text: str) -> tuple[str, str]:
-    """The thebibliography environments of a .bbl and the BibTeX of its biblatex
-    entries. What surrounds them (\\providecommand...) is no text of the paper."""
+    """Return raw bibliography environments (including amsrefs/Harvard), and
+    BibTeX text reconstructed from structured biblatex biber entries.
+    """
     biblatex = _biblatex_to_bibtex(text) if _ENTRY.search(text) else ""
     stripped, _ = strip_comments(text)
+    stripped = _convert_harvard_items(stripped)
     found = []
     for m in _THEBIB.finditer(stripped):
         env = m.group(0)
-        found.append(env if re.search(r"\\end\s*\{thebibliography\}\Z", env) else env + "\n\\end{thebibliography}")
-    if not found and "\\bibitem" in stripped:  # \bibitem without their environment
-        at = stripped.index("\\bibitem")
-        found.append("\\begin{thebibliography}{}\n" + stripped[at:] + "\n\\end{thebibliography}")
+        found.append(env if re.search(r"\\end\s*\{thebibliography\}\Z", env)
+                     else env + "\n\\end{thebibliography}")
+    if not found and ("\\bibitem" in stripped or _AMSREF.search(stripped)):
+        starts = [m.start() for pattern in (re.compile(r"\\bibitem(?![A-Za-z@])"), _AMSREF)
+                  for m in pattern.finditer(stripped)]
+        if starts:
+            # An explicit amsrefs entry with no outer thebibliography still
+            # belongs to references, not the main document hierarchy.
+            found.append("\\begin{thebibliography}{}\n" + stripped[min(starts):]
+                         + "\n\\end{thebibliography}")
     return "\n".join(found), biblatex

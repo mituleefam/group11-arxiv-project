@@ -60,11 +60,17 @@ def fixture(root: Path) -> dict:
 class RegistryTests(unittest.TestCase):
     def test_leaf_dedup_across_parents_versions_and_whitespace(self):
         r = Registry(PAPER)
+        r.start_version(1)
         a = r.element_id("sentence", "  Alpha\n beta.  ", "p1", 0)
-        b = r.element_id("sentence", "Alpha beta.", "p2", 1)
-        self.assertEqual(a,b)
+        duplicate = r.element_id("sentence", "Alpha beta.", "p2", 1)
+        self.assertNotEqual(a, duplicate)
+        r.start_version(2)
+        b = r.element_id("sentence", "Alpha beta.", "p9", 0)
+        second = r.element_id("sentence", "Alpha beta.", "p10", 1)
+        self.assertEqual(a, b)
+        self.assertEqual(duplicate, second)
         self.assertEqual(r.rows()[0]["content"], "Alpha beta.")
-        self.assertEqual(len(r.rows()), 1)
+        self.assertEqual(len(r.rows()), 2)
 
     def test_kind_and_paper_scoping(self):
         r = Registry(PAPER)

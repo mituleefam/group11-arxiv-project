@@ -165,6 +165,32 @@ class GathererTest(unittest.TestCase):
         self.assertEqual(g.missing, [])
         self.assertTrue(any("names a macro" in p for p in g.problems))
 
+    def test_endinput_only_named_is_not_executed(self):
+        # \let\X\endinput and \def\X{\endinput} only name \endinput (arXiv 2604.07072)
+        g = gather(self.folder({"main.tex": "\\documentclass{article}\n\\let\\ENDGRAPH\\endinput\n"
+                                            "\\def\\stop{\\endinput}\n\\begin{document}BODY\\end{document}"}))
+        self.assertIn("BODY", g.text)
+        g = gather(self.folder({"main.tex": DOC % "\\input{ch}", "ch.tex": "\\let\\a\\endinput KEPT\n\\endinput\nDROPPED"}))
+        self.assertIn("KEPT", g.text)
+        self.assertNotIn("DROPPED", g.text)
+
+    def test_subfiles_document_over_preamble_only_main(self):
+        # main.tex = \documentclass[main-source.tex]{subfiles} with the \subfile calls,
+        # main-source.tex = the preamble with an empty body (arXiv 2604.07242)
+        g = gather(self.folder({
+            "main-source.tex": "\\documentclass{article}\n\\usepackage{subfiles}\n\\begin{document}\n\\end{document}",
+            "main.tex": "\\documentclass[main-source.tex]{subfiles}\n\\begin{document}\\section{Intro}\\subfile{sec/a}\\end{document}",
+            "sec/a.tex": "\\documentclass[../main-source.tex]{subfiles}\n\\begin{document}SECTION A\\end{document}"}))
+        self.assertEqual(g.root, "main.tex")
+        self.assertIn("SECTION A", g.text)
+        # usual subfiles layout is unchanged: the main file with content stays the root
+        g = gather(self.folder({
+            "main.tex": "\\documentclass{article}\\usepackage{subfiles}\\begin{document}MAIN \\subfile{a}\\end{document}",
+            "a.tex": "\\documentclass[main]{subfiles}\\begin{document}CHILD\\end{document}"}))
+        self.assertEqual(g.root, "main.tex")
+        self.assertIn("MAIN", g.text)
+        self.assertIn("CHILD", g.text)
+
     def test_bibliography(self):
         g = gather(self.folder({"main.tex": DOC % "\\bibliography{refs,gone}", "refs.bib": "@article{a,}"}))
         self.assertEqual((g.bib_files, g.bib_names_missing), (["refs.bib"], ["gone"]))
@@ -424,8 +450,9 @@ class HierarchyTest(unittest.TestCase):
                                   "\\section{B}\nSame.")
         self.assertEqual(len([r for r in reg.rows() if r["content"] == "Proof."]), 2)
         same = [r["element_id"] for r in reg.rows() if r["content"] == "Same."]
-        self.assertEqual(len(same), 1)
-        self.assertEqual(len([p for c, p in tree.edges if c == same[0]]), 2)
+        self.assertEqual(len(same), 2)
+        self.assertEqual(len([p for c, p in tree.edges if c in same]), 2)
+        self.assertEqual(len(set(same)), 2)
 
     def test_cross_version_ids(self):
         reg = BasicRegistry("2605.00001")
@@ -467,8 +494,9 @@ class HierarchyTest(unittest.TestCase):
     def test_sentence_twice_under_one_parent_has_two_edges(self):
         reg, root, tree = tree_of("\\section{A}\nSame text.\n\nSame text.")
         same = [r["element_id"] for r in reg.rows() if r["content"] == "Same text."]
-        self.assertEqual(len(same), 1)
-        self.assertEqual(len([c for c, _ in tree.edges if c == same[0]]), 2)
+        self.assertEqual(len(same), 2)
+        self.assertEqual(len([c for c, _ in tree.edges if c in same]), 2)
+        self.assertEqual(len(set(same)), 2)
 
     def test_malformed_input(self):
         reg, root, tree = tree_of("\\section{S}\n\\begin{itemize}\n\\item One\n\\section{Inside}\nText.\n"
