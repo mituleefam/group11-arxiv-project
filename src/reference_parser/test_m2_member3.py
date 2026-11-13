@@ -26,7 +26,7 @@ except ModuleNotFoundError:          # a branch without the Milestone 2 pipeline
     BIBTEX_FIELDS = ["arxiv_id", "citation_key", "entry_type", "title", "authors", "year", "doi", "journal", "url"]
 from reference_parser.bibitem_parser import cited_keys, parse, parse_bib  # noqa: E402
 from reference_parser.bibtex_converter import bib_authors, convert, parse_free_text  # noqa: E402
-from reference_parser.citation_updater import update  # noqa: E402
+from reference_parser.citation_updater import update, extend_case_aliases  # noqa: E402
 from reference_parser.dedup_bibtex import dedup  # noqa: E402
 from reference_parser.ref_text import find_arxiv_id, latex_to_text, normalize_doi, title_key  # noqa: E402
 
@@ -245,6 +245,21 @@ class DedupTest(unittest.TestCase):
 
 
 class CitationUpdaterTest(unittest.TestCase):
+    def test_unambiguous_case_only_aliases(self):
+        text = r"\citep{Zhang2025} and \citet{Zhang2025} and \cite{Unknown}"
+        mapping = extend_case_aliases([text], ["zhang2025"], {})
+        self.assertEqual(mapping, {"Zhang2025": "zhang2025"})
+        self.assertEqual(update(text, mapping),
+                         r"\citep{zhang2025} and \citet{zhang2025} and \cite{Unknown}")
+
+    def test_case_aliases_conflicting_or_existing(self):
+        text = r"\cite{KEY,Other,Unknown}"
+        # A key used for two different works cannot be resolved by case alone.
+        mapping = extend_case_aliases([text], ["key", "other"], {"key": "second_work"})
+        self.assertNotIn("KEY", mapping)
+        self.assertEqual(mapping["Other"], "other")
+        self.assertNotIn("Unknown", mapping)
+
     def test_renames(self):
         rename = {"vaswani2017": "vit", "Old": "new"}
         text = (r"As in \cite{vaswani2017} and \citep[see][p.~3]{ vaswani2017 , other}, \citet*{old}, "
@@ -261,6 +276,31 @@ class CitationUpdaterTest(unittest.TestCase):
 
 @unittest.skipIf(m2_contract is None, "m2_contract.py / pipeline_m2.py (Member 1) are not in src/")
 class PipelineTest(unittest.TestCase):
+    def test_pipeline_normalizes_case_of_bibtex_key(self):
+        import pipeline_m2
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            data = tmp / "data"
+            paper = data / "corpus" / "2605-00002"
+            (paper / "v1").mkdir(parents=True)
+            tex = DOC % (r"\section{Introduction}See \citep{Zhang2025} and \citet{Zhang2025}."
+                         + "\n\\bibliography{refs}")
+            (paper / "v1" / "main.tex").write_text(tex, encoding="utf-8")
+            (paper / "v1" / "refs.bib").write_text(
+                "@article{zhang2025,title={The Equilibrium Response of Atmospheric Machine Learning Models},"
+                "author={Zhang, Bosong and Merlis, Timothy},year={2025}}", encoding="utf-8")
+            (paper / "versions.json").write_text(json.dumps({"versions": {"v1": {"status": "success"}}}))
+            self.assertEqual(pipeline_m2.main(["--data-dir", str(data), "--workers", "1", "--no-export"]), 0)
+            parsed = paper / "parsed"
+            aliases = json.loads((parsed / "cite_rename_map.json").read_text())
+            self.assertEqual(aliases.get("Zhang2025"), "zhang2025")
+            sentences = [r[2] for r in json.loads((parsed / "elements.json").read_text())["rows"]
+                         if r[1] == "sentence"]
+            self.assertTrue(any(r"\citep{zhang2025}" in t for t in sentences), sentences)
+            self.assertFalse(any(r"\citet{Zhang2025}" in t for t in sentences), sentences)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_pipeline_and_stats(self):
         import pipeline_m2
         from reference_parser import reference_stats

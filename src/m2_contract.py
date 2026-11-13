@@ -38,11 +38,12 @@ Member 3 (references), on each version's gatherer.Gathered:
 Member 4 (element IDs):
     dedup_elements.Registry(arxiv_id: str)
         .element_id(kind, content, parent_id, occurrence) -> str
-            the ID of an element of this paper, the same for the same
-            element in every version. A leaf (sentence, formula, figure) is
-            the same element wherever its content is the same, even twice in
-            one version (several edges in `hierarchy`). A heading or paragraph
-            (parent_id None) also needs the same occurrence: how many earlier
+            the ID of an element of this paper, potentially shared between
+            versions, but never reused for two occurrences of the same leaf
+            in ONE version. Member 1 calls .start_version(version) before each
+            version to reset per-version leaf occurrence counters. A heading
+            or paragraph (parent_id None) also needs the same occurrence:
+            how many earlier
             nodes of this version have the same kind and content (0 for the
             first), so a title that moves between versions keeps its ID and
             one repeated in a version stays two nodes (never its own parent).
@@ -197,10 +198,26 @@ class BasicRegistry:
         self._ids: dict[tuple, str] = {}
         self._rows: list[dict] = []
         self._count: Counter = Counter()
+        self._leaf_seen: Counter = Counter()
+        self._version = None
+
+    def start_version(self, version: int) -> None:
+        if version != self._version:
+            self._version = version
+            self._leaf_seen.clear()
 
     def element_id(self, kind: str, content: str, parent_id: str | None, occurrence: int) -> str:
         content = " ".join(content.split())
-        key = (kind, content) if kind in LEAF_KINDS else (kind, content, parent_id, occurrence)
+        if kind == "document":
+            match = re.fullmatch(r"Version ([1-9]\d*) root", content)
+            if match:
+                self.start_version(int(match.group(1)))
+        if kind in LEAF_KINDS:
+            index = self._leaf_seen[(kind, content)]
+            self._leaf_seen[(kind, content)] += 1
+            key = (kind, content, index)
+        else:
+            key = (kind, content, parent_id, occurrence)
         found = self._ids.get(key)
         if found is None:
             letter = PREFIX.get(kind, "x")

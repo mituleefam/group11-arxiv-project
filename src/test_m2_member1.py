@@ -424,8 +424,9 @@ class HierarchyTest(unittest.TestCase):
                                   "\\section{B}\nSame.")
         self.assertEqual(len([r for r in reg.rows() if r["content"] == "Proof."]), 2)
         same = [r["element_id"] for r in reg.rows() if r["content"] == "Same."]
-        self.assertEqual(len(same), 1)
-        self.assertEqual(len([p for c, p in tree.edges if c == same[0]]), 2)
+        self.assertEqual(len(same), 2)
+        self.assertEqual(len([p for c, p in tree.edges if c in same]), 2)
+        self.assertEqual(len(set(same)), 2)
 
     def test_cross_version_ids(self):
         reg = BasicRegistry("2605.00001")
@@ -467,8 +468,9 @@ class HierarchyTest(unittest.TestCase):
     def test_sentence_twice_under_one_parent_has_two_edges(self):
         reg, root, tree = tree_of("\\section{A}\nSame text.\n\nSame text.")
         same = [r["element_id"] for r in reg.rows() if r["content"] == "Same text."]
-        self.assertEqual(len(same), 1)
-        self.assertEqual(len([c for c, _ in tree.edges if c == same[0]]), 2)
+        self.assertEqual(len(same), 2)
+        self.assertEqual(len([c for c, _ in tree.edges if c in same]), 2)
+        self.assertEqual(len(set(same)), 2)
 
     def test_malformed_input(self):
         reg, root, tree = tree_of("\\section{S}\n\\begin{itemize}\n\\item One\n\\section{Inside}\nText.\n"

@@ -57,9 +57,25 @@ STOP = {"a", "an", "the", "of", "on", "in", "for", "and", "to", "with", "by", "f
 LAST_STATS: dict = {}
 
 
+_GENERIC_TITLE = re.compile(
+    r"^(?:[\w\s-]+ collaboration|accessed(?: on)?[\w\s-]*|retrieved(?: on)?[\w\s-]*|"
+    r"available online|online resource|web page|arxiv(?: preprint)?|untitled|[0-9 ]+)$",
+    re.I,
+)
+
+
+def _trustworthy_title(title: str) -> bool:
+    """Reject placeholders and short ambiguous titles for title-only merges."""
+    words = title.split()
+    if not title or _GENERIC_TITLE.fullmatch(title) or not any(c.isalpha() for c in title):
+        return False
+    # Two-word titles (especially model names) are too ambiguous by themselves.
+    return len(words) >= 3 and sum(len(word) >= 3 for word in words) >= 2
+
+
 class _Ref:
     """One input row with what is compared."""
-    __slots__ = ("version", "index", "row", "key", "doi", "arxiv", "url", "title", "year", "surname")
+    __slots__ = ("version", "index", "row", "key", "doi", "arxiv", "url", "title", "raw_title", "year", "surname")
 
     def __init__(self, version: int, index: int, row: dict):
         self.version, self.index, self.row = version, index, row
@@ -71,7 +87,8 @@ class _Ref:
         if self.url and ("doi.org/" in self.url or "arxiv.org/" in self.url):
             self.url = None            # compared through doi / arxiv already
         t = title_key(row.get("title"))
-        self.title = t if (len(t.split()) >= 3 or len(t) >= 15) else ""
+        self.raw_title = t
+        self.title = t if _trustworthy_title(t) else ""
         self.year = row.get("year")
         authors = row.get("authors") or []
         self.surname = surname_key(authors[0]) if authors else ""
@@ -117,9 +134,38 @@ def _disagree(a: _Ref, b: _Ref) -> bool:
         return True
     if a.arxiv and b.arxiv and a.arxiv != b.arxiv:
         return True
-    if a.title and b.title and _similar(a.title, b.title) < TITLE_UNLIKE:
-        return True
+    if a.raw_title and b.raw_title:
+        if _numbering(a.raw_title) != _numbering(b.raw_title):
+            return True
+        if _similar(a.raw_title, b.raw_title) < TITLE_UNLIKE:
+            return True
     return False
+
+
+def _strong_shared_identity(a: _Ref, b: _Ref) -> bool:
+    return bool((a.doi and a.doi == b.doi) or
+                (a.arxiv and a.arxiv == b.arxiv) or
+                (a.url and a.url == b.url))
+
+
+def _same_key_confident(a: _Ref, b: _Ref) -> bool:
+    """A reused key (e.g. `1`, `zz`) is not itself reliable identity evidence."""
+    if _disagree(a, b):
+        return False
+    if _strong_shared_identity(a, b):
+        return True
+    same_year = bool(a.year and a.year == b.year)
+    same_author = bool(a.surname and a.surname == b.surname)
+    if a.title and b.title and a.title == b.title:
+        # Same reliable title + same key: one year may have been parsed
+        # incorrectly; retain the structured field on union.
+        return True
+    if a.raw_title and b.raw_title:
+        if not (a.title and b.title):
+            return False  # e.g. '(ATLAS Collaboration)', title not distinctive
+        return (same_year or same_author) and _similar(a.raw_title, b.raw_title) >= TITLE_FUZZY
+    # No titles / one missing: do not deduplicate by a reused key alone.
+    return same_year and same_author
 
 
 def _compatible(a: _Ref, b: _Ref) -> bool:
@@ -165,7 +211,7 @@ def _groups(refs: list[_Ref]) -> tuple[_UnionFind, Counter]:
             # each row with the same key joins the first one it agrees with
             for k, i in enumerate(indexes[1:], 1):
                 for j in indexes[:k]:
-                    if not _disagree(refs[i], refs[j]):
+                    if _same_key_confident(refs[i], refs[j]):
                         if uf.union(i, j):
                             why["key"] += 1
                         break

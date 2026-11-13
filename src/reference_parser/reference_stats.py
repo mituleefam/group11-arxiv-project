@@ -111,6 +111,8 @@ def references_of_paper(arxiv_id: str, paper_dir: Path, versions: list[str],
                               **{k: p.get(k, 0) for k in ("bibitems", "amsrefs", "bib_entries_total",
                                                            "bib_entries_used", "cited_keys", "cited_not_found")})
     rows, rename = dedup_bibtex.dedup(by_version) if by_version else ([], {})
+    rename = citation_updater.extend_case_aliases(
+        texts.values(), (row["citation_key"] for row in rows), rename)
     d = dict(dedup_bibtex.LAST_STATS)
     for text in texts.values():
         citation_updater.update(text, rename)

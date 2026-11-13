@@ -519,11 +519,13 @@ src/
 ├── sentence_splitter.py  sentences, without cutting at i.e., Fig. 1, URLs or decimals
 ├── leaf_extractor.py     sentences, formulas and figures of a paragraph
 ├── hierarchy.py          the tree of a version
-├── dedup_elements.py     one element_id for the same content across versions
+├── dedup_elements.py     unique node per occurrence within version; reuse across versions
 ├── reference_parser/     \bibitem, .bib and .bbl to BibTeX rows, deduplication, \cite renames
 ├── fetch_bbl.py          adds the .bbl files missing from a corpus crawled earlier
 ├── validate_m2.py        checks the JSON files, the trees and the Parquet schemas
 ├── benchmark_m2.py       measures a whole run (wall time, peak RAM, output size)
+├── group_benchmark_m2.py aggregates 5 M2 member ranges; invoked by group_benchmark.py --m2
+├── test_m2_full_fixes.py regression tests for M2 bug-fix cases
 ├── statistics_m2.py      the numbers of the report
 └── benchmark_colab_m2.ipynb   all the steps below on Google Colab, CPU-only
 ```
@@ -546,6 +548,7 @@ python src/test_m2_member1.py
 python src/test_m2_member2.py
 python src/reference_parser/test_m2_member3.py
 python src/test_m2_member4.py
+python src/test_m2_full_fixes.py
 
 # 2. Add the missing .bbl files. Only for a corpus crawled before .bbl files were kept.
 #    Run it before step 3, so the parse reads them. The first command sends no request.
@@ -582,8 +585,38 @@ Run section 8.2 for each range's folder, then join the tables that each run left
 python src/pipeline_m2.py --data-dir DIR_1 DIR_2 DIR_3 DIR_4 DIR_5 --export-only --out TABLES_DIR
 ```
 
-Each folder keeps its own benchmark and statistics. Add up the wall times of the five runs for the
-group's total; each run's peak RAM is its own, so report the largest one rather than a sum.
+Each folder keeps its own benchmark, validation and statistics. Run all five ranges on
+Colab CPU-only, with the raw corpus copied to local `/content` (not parsed on Drive).
+**Force a complete reparse after applying the M2 full fixes:** old `parsed/`/tables
+no longer meet the one-parent-per-node invariant.
+
+Measure the separate `--export-only` aggregation stage as well:
+
+```bash
+python src/benchmark.py --data-dir /content/export_workspace \
+  --output-dir /content/export_logs --interval 0.5 -- \
+  python src/pipeline_m2.py --data-dir DIR_1 DIR_2 DIR_3 DIR_4 DIR_5 \
+  --export-only --out TABLES_DIR
+```
+
+`/content/export_workspace` is a scratch directory for benchmark disk sampling;
+`TABLES_DIR` is the final merged Parquet output. Preserve the generated
+`performance_summary_*.json` as `EXPORT_SUMMARY` (and check its `command`
+includes `--export-only` and `return_code == 0`). Then aggregate:
+
+```bash
+python src/group_benchmark.py --m2 \
+  A=DIR_1 B=DIR_2 C=DIR_3 D=DIR_4 E=DIR_5 \
+  --expected-per-member 5000 --tables-dir TABLES_DIR \
+  --export-summary EXPORT_SUMMARY --out GROUP_REPORT
+```
+
+Change `--expected-per-member` if Moodle assigns a different count. The group
+aggregation recomputes dedup rates from summed counts, adds sequential wall
+times **including export**, uses the highest sampled RAM, and measures final
+bytes only from the **merged** tables. It exits nonzero when coverage,
+benchmark, output or validation is incomplete. Do not sum member percentages
+or summed RAM peaks. See `docs/M2_FULL_FIX_REVIEW.md` for the full pre-run audit.
 
 ### 8.4. Why some references come from a `.bbl`
 
@@ -619,4 +652,11 @@ In `summary_statistics_m2.csv`, `versions_references_from_bbl` counts the versio
 from a `.bbl`, and `versions_references_in_missing_bbl` those that name a `.bib` or `.bbl` that is not
 in the folder. Keep data, tables and logs out of this repository: the report reads only the aggregated numbers.
 
-See `docs/m2_references.md` for the reference steps and `docs/m2_member4.md` for validation, statistics and the benchmark.
+See `docs/m2_references.md` for the reference steps, `docs/m2_member4.md` for validation,
+statistics and benchmark, and `docs/M2_FULL_FIX_REVIEW.md` for the mandatory M2 corrections.
+
+For the GBao full-run warning audit and post-run validation triage, see `docs/M2_GBAO_POSTRUN_REVIEW.md` and `src/audit_m2_warnings.py`.
+
+### Milestone 2 — Review năm nhóm cảnh báo sau benchmark
+
+Xem [M2 warning diagnosis guide](docs/M2_FIVE_WARNINGS_FIX_GUIDE.md) để kiểm tra citation, cây TeX rỗng, root gathering, structural leaves và encoding trên corpus thực tế. Công cụ `src/diagnose_m2_warnings.py` giữ nguyên trạng thái validator, chỉ bổ sung bằng chứng.

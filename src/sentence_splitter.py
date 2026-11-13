@@ -87,6 +87,16 @@ def _mask(text: str, saved: list[str]) -> str:
             out.append(text[pos:])
             return "".join(out)
         end = command_end(text, m.end()) if m.group("command") else m.end()
+        # 'et al.' is often mid-sentence, but can finish a complete sentence.
+        # Only allow splitting before a strong new-sentence opener to avoid
+        # breaking author subjects such as 'Smith et al. introduced ...'.
+        if text[m.start():end].lower() == "et al." and re.match(
+                r"\s+(?:The|This|These|Those|We|Our|However|Moreover|"
+                r"Furthermore|Therefore|Nevertheless|In contrast|It is|Such)\b",
+                text[end:]):
+            out.append(text[pos:end])
+            pos = end
+            continue
         out.append(text[pos:m.start()])
         out.append(keep(text[m.start():end]))
         pos = end

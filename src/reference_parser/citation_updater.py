@@ -27,6 +27,37 @@ from reference_parser.bibitem_parser import iter_cite_groups
 LAST_STATS: dict = {}
 
 
+def extend_case_aliases(texts, canonical_keys, rename: dict[str, str]) -> dict[str, str]:
+    """Add safe case-only aliases cited in source text to the rename map.
+
+    Bibliography entry keys and text citations can differ only in case
+    (e.g. BibTeX ``zhang2025`` vs. LaTeX ``\\citep{Zhang2025}``).
+    A dedup map contains no entry when the canonical key already equals
+    the BibTeX entry key. Only add an alias when case-folding resolves to
+    exactly ONE canonical target; leave undefined or conflicting keys alone.
+    """
+    result = dict(rename)
+    exact = set(canonical_keys)
+    targets: dict[str, set[str]] = {}
+    for key in exact:
+        targets.setdefault(key.casefold(), set()).add(key)
+    for old, new in rename.items():
+        targets.setdefault(old.casefold(), set()).add(new)
+
+    for text in texts:
+        for start, end in iter_cite_groups(text):
+            for part in text[start:end].split(","):
+                key = part.strip()
+                if not key or key == "*" or key in exact or key in result:
+                    continue
+                possible = targets.get(key.casefold(), set())
+                if len(possible) == 1:
+                    canonical = next(iter(possible))
+                    if canonical != key:
+                        result[key] = canonical
+    return result
+
+
 def _lookup(rename: dict[str, str]):
     lower: dict[str, str | None] = {}
     for old, new in rename.items():

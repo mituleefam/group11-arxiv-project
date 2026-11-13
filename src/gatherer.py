@@ -152,7 +152,15 @@ def read_text(path: Path) -> tuple[str, bool]:
         else:
             text, utf8 = raw.decode("utf-8-sig"), True
     except UnicodeDecodeError:
-        text, utf8 = raw.decode("latin-1"), False
+        # CP1252 agrees with Latin-1 on ordinary Western letters but also
+        # decodes the typographic quotes/dashes in bytes 0x80..0x9F that
+        # otherwise become invisible C1 controls. Some bytes are undefined
+        # in CP1252; use lossless Latin-1 rather than inserting U+FFFD.
+        try:
+            text = raw.decode("cp1252")
+        except UnicodeDecodeError:
+            text = raw.decode("latin-1")
+        utf8 = False
     return text.replace("\r\n", "\n").replace("\r", "\n"), utf8  # old Mac files end lines with \r
 
 
@@ -377,6 +385,8 @@ class _Gatherer:
                     embedded = next((k for k in (plain, plain + ".bib") if k in self.f.embedded), None)
                     if embedded:
                         self.result.embedded_bib[embedded] = self.f.embedded[embedded]
+                    elif path and path.lower().endswith(".bbl"):
+                        out.append("\n" + self.read_bbl(path) + "\n")
                     elif path and path not in self.result.bib_files:
                         self.result.bib_files.append(path)
                     elif not path:
@@ -473,8 +483,12 @@ class _Gatherer:
                 seen = reach.get(rel, {rel})
                 classes = [info[r][0] for r in seen if info[r][0] is not None]
                 stem = posixpath.splitext(posixpath.basename(rel))[0].lower()
+                # A large supplementary/diff/cover file should never outrank a
+                # plausible main manuscript purely by size or lexicographic order.
+                suspect = bool(re.search(r"(?:^|[_\-.])(?:supp(?:lementary)?|diff|latexdiff|cover|letter|response|rebuttal|appendix|appendices)(?:$|[_\-.0-9])", stem))
+                mainlike = bool(re.search(r"^(?:main|paper|manuscript|article|ms)(?:$|[_\-.0-9])", stem))
                 return (any(c not in CHILD_CLASSES for c in classes), any(info[r][1] for r in seen),
-                        stem in USUAL_ROOT_NAMES, "/" not in rel, len(seen),
+                        not suspect, mainlike, stem in USUAL_ROOT_NAMES, "/" not in rel, len(seen),
                         self.f.paths[rel].stat().st_size, rel)
 
             root = max(roots, key=score)

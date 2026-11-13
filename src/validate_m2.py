@@ -3,10 +3,11 @@
     python src/validate_m2.py --data-dir data --limit 5
     python src/validate_m2.py --data-dir data --require-parquet
 
-This implementation deliberately does NOT assume a strict tree of unique
-child IDs: Member 1's contract permits repeated sentences under multiple
-parents, i.e. multiple edges of the same element within one version.
-A version without TeX legitimately has a document root with zero edges.
+For each version the hierarchy must form a tree: every child ID has one
+parent, no duplicate edges or cycles, and every node is reachable from root.
+Equivalent content may share an element ID ACROSS versions but not for
+separate occurrences within the same version. A version without TeX
+legitimately has a document root with zero edges.
 """
 from __future__ import annotations
 
@@ -20,9 +21,9 @@ from pathlib import Path
 from checkpoint import ParseManifest
 from common import DataLayout
 from pipeline_m2 import list_papers
+from reference_parser.bibitem_parser import iter_cite_groups
 
 COLUMNS = ("arxiv_id", "version", "check_name", "status", "details")
-CITE_RE = re.compile(r"\\[A-Za-z]*cite[A-Za-z]*\*?(?:\[[^\]]*\]){0,2}\{([^{}]*)\}")
 DOCUMENT_RE = re.compile(r"^Version (\d+) root$")
 BIB_FIELDS = ("arxiv_id", "citation_key", "entry_type", "title", "authors", "year", "doi", "journal", "url")
 VALID_KINDS = {"document", "heading", "paragraph", "list", "item", "sentence", "formula", "figure"}
@@ -79,7 +80,9 @@ def _verify_graph(paper: str, version: int, elements: dict, root: str,
     all_ids = {root}
     bad_parent = []
     bad_child = []
+    parent_sets = defaultdict(set)
     for child, parent in edges:
+        parent_sets[child].add(parent)
         if parent not in elements:
             bad_parent.append(parent)
         if child not in elements:
@@ -87,6 +90,15 @@ def _verify_graph(paper: str, version: int, elements: dict, root: str,
         children[parent].add(child)
         all_ids.add(child)
         all_ids.add(parent)
+    duplicate_edges = len(edges) - len(set(edges))
+    multiparent = {child: parents for child, parents in parent_sets.items()
+                   if len(parents) > 1}
+    reporter.add(paper, version, "unique_parent_per_version",
+                 "FAIL" if multiparent else "PASS",
+                 f"nodes_with_multiple_parents={len(multiparent)}, examples={list(multiparent)[:5]}")
+    reporter.add(paper, version, "duplicate_hierarchy_edges",
+                 "FAIL" if duplicate_edges else "PASS",
+                 f"duplicate_edges={duplicate_edges}")
     if bad_parent or bad_child:
         reporter.add(paper, version, "edge_elements_exist", "FAIL",
                      f"missing parents={len(bad_parent)}, children={len(bad_child)}")
@@ -186,6 +198,12 @@ def validate_paper(paper: dict, reporter: Reporter) -> dict[str, int]:
             invalid_bib += 1
         else:
             keys.add(key)
+    replacement_chars = sum("\ufffd" in row["content"] for row in elements.values())
+    replacement_chars += sum(any("\ufffd" in str(v) for v in row.values())
+                             for row in bib_doc.get("rows", []) if isinstance(row, dict))
+    if replacement_chars:
+        reporter.add(arxiv_id, "", "encoding_replacement_chars", "WARN",
+                     f"records_containing_U+FFFD={replacement_chars}; inspect original source")
     reporter.add(arxiv_id, "", "bibtex_rows", "FAIL" if invalid_bib else "PASS",
                  f"rows={len(bib_doc.get('rows', []))}, invalid={invalid_bib}")
     all_edges = defaultdict(list)
@@ -242,8 +260,13 @@ def validate_paper(paper: dict, reporter: Reporter) -> dict[str, int]:
     # Cites are counted by unique (paper, key), not by textual occurrence.
     cited = set()
     for item in elements.values():
-        for content in CITE_RE.findall(item["content"]):
-            cited.update(key.strip() for key in content.split(",") if key.strip())
+        text = item["content"]
+        # Share the citation grammar with the reference parser, including
+        # \\Cite, biblatex multicites and optional notes. A naked
+        # \\nocite{*} requests all references; it is not a missing key.
+        for begin, end in iter_cite_groups(text):
+            cited.update(key.strip() for key in text[begin:end].split(",")
+                         if key.strip() and key.strip() != "*")
     unmatched = sorted(cited - keys)
     reporter.add(arxiv_id, "", "citation_key_coverage", "WARN" if unmatched else "PASS",
                  f"matched={len(cited)-len(unmatched)}/{len(cited)}, missing={unmatched[:20]}")

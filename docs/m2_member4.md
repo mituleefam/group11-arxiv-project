@@ -15,9 +15,10 @@ Phần này phụ trách **ID của các phần tử LaTeX sau chuẩn hóa**, k
 
 ## Điểm tích hợp với pipeline
 
-- `pipeline_m2.py` (Member 1) gọi `Registry(arxiv_id).element_id(kind, content, parent_id, occurrence)` khi dựng node và gọi `rows()` để xuất bảng `elements`. **Giữ nguyên interface trong `m2_contract.py`.**
+- `pipeline_m2.py` gọi `Registry(arxiv_id).element_id(kind, content, parent_id, occurrence)` khi dựng node và gọi `rows()` để xuất bảng `elements`. **Giữ nguyên interface trong `m2_contract.py`.**
 - Registry dùng **exact match sau khi chuẩn hóa whitespace**, không lowercase, không fuzzy matching. `sentence` / `formula` / `figure` trùng `kind` + `content` sẽ dùng chung ID giữa các version. Heading/paragraph xét thêm `occurrence`; node cấu trúc xét thêm `parent_id` và `occurrence`. Root của từng version có nội dung riêng.
-- Bảng `hierarchy` vẫn lưu các cạnh theo từng version: một `element_id` có thể xuất hiện ở nhiều cạnh, kể cả trong cùng version. Không dùng điều kiện `element_id` duy nhất trên bảng cạnh.
+- Bảng `hierarchy` lưu các cạnh theo từng version. **Trong mỗi version, mỗi node có đúng một cha và không được trùng cạnh.** Nội dung câu/công thức/hình trùng lần thứ hai trong cùng version có ID mới; cùng nội dung ở lần xuất hiện tương ứng giữa các version có thể dùng chung ID.
+- `pipeline_m2.py` gọi `registry.start_version(version)` trước khi tạo node của từng version; interface `element_id`/`rows` cũ vẫn được giữ. Các ID đổi so với bản M2 cũ, bắt buộc chạy `--force` trên toàn corpus.
 - Dữ liệu tham khảo do Member 3 xử lý **trước** bước dedup elements để các `\cite{...}` được thống nhất key.
 
 ## Kiểm tra và đầu ra
@@ -49,6 +50,6 @@ python src/statistics_m2.py --data-dir data --limit 5
 2. **Validation:** Kiểm tra đúng root, chu trình, orphan node, schema Arrow/Parquet, các phiên bản không có TeX và citation key chưa khớp. Citation thiếu được ghi `WARN`, không mặc định là lỗi parser.
 3. **Statistics:** “Trước dedup” của elements là **số lần xuất hiện** (số cạnh + root), “sau” là **số element phân biệt**; tỷ lệ giảm số bản ghi **không phải** tỷ lệ giảm dung lượng file. BibTeX before-dedup chỉ có khi `reference_log.csv` từ Member 3 đầy đủ.
 4. **Benchmark:** `benchmark_m2.py` tái sử dụng `benchmark.py` M1, không chỉnh file M1. RAM peak là **giá trị lớn nhất trong các mẫu đo**, không phải đỉnh tuyệt đối; số đo có thể tính trùng trang nhớ dùng chung giữa các process.
-5. **Tính tương thích:** Không chỉnh sửa code Member 1–3 hoặc `corpus_statistics.py`. Khi module parsing/normalization thay đổi, cần chạy lại integration test và validation trước khi chốt số liệu.
+5. **Tính tương thích:** Bộ sửa M2 tổng thể có thay đổi `gatherer.py`, `pipeline_m2.py`, các module chuẩn hóa và BibTeX của các thành viên khác. Xem chi tiết tại `M2_FULL_FIX_REVIEW.md`; M1 `corpus_statistics.py` không thay đổi. Sau khi merge, chạy lại integration test, validation và benchmark toàn corpus.
 
 Các file CSV/log và Parquet thuộc dữ liệu chạy, **không commit toàn bộ corpus lên GitHub**. Member 5 chỉ cần lấy bảng thống kê/log đã chọn để dựng biểu đồ Jupyter Book.

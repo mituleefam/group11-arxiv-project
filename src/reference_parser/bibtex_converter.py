@@ -60,7 +60,7 @@ TYPE_ALIASES = {"conference": "inproceedings", "online": "misc", "electronic": "
 # Small pieces
 # ---------------------------------------------------------------------------
 
-_YEAR = re.compile(r"(?<![\d.\-/])(1[89]\d\d|20\d\d)(?![\d])")
+_YEAR = re.compile(r"(?<![\d.\-/])((?:1[6-9]|20)\d\d)(?!\d|\.\d{2,})")
 
 
 def to_year(value) -> int | None:
@@ -70,7 +70,7 @@ def to_year(value) -> int | None:
     if not m:
         return None
     year = int(m.group(1))
-    return year if 1800 <= year <= MAX_YEAR else None
+    return year if 1600 <= year <= MAX_YEAR else None
 
 
 def normalize_type(kind: str | None, fields: dict | None = None) -> str:
@@ -301,7 +301,7 @@ _ABBREV = {"al", "proc", "conf", "int", "intl", "vol", "no", "nos", "pp", "eds",
 _MARK_ITALIC = re.compile(r"\\(?:emph|textit|textsl|mathit)\s*(?=\{)|\{\\(?:em|it|sl|itshape)(?![A-Za-z])")
 _QUOTED = re.compile(r"``(.+?)''|`(.{8,}?)'(?=[\s,.\[\x06]|$)|\u201c(.+?)\u201d|(?<![\w\\])\"(.{8,}?)\"(?!\w)", re.S)
 _NEWBLOCK = re.compile(r"\\newblock(?![A-Za-z])")
-_APA_YEAR = re.compile(r"\(\s*((?:1[89]|20)\d\d)[a-z]?(?:,\s*[A-Za-z]+\.?(?:\s+\d{1,2})?)?\s*\)")
+_APA_YEAR = re.compile(r"\(\s*((?:1[6-9]|20)\d\d)[a-z]?(?:,\s*[A-Za-z]+\.?(?:\s+\d{1,2})?)?\s*\)")
 _URL_CMD = re.compile(r"\\(?:url|path|nolinkurl)\s*(?=\{)")
 _HREF = re.compile(r"\\href\s*(?=\{)")
 _DOI_CMD = re.compile(r"\\doi\s*(?=\{)")
@@ -419,7 +419,7 @@ _VENUE_START = re.compile(rf"[.,]\s+(?=\x05?\s*(?:[{_CAPITAL}][a-z]{{0,7}}\.\s|[
                           r"Springer\b|Cambridge\b|Oxford\b|Wiley\b|Birkh|Academic\b|Elsevier\b|Princeton\b|Kluwer\b|"
                           r"American Math|World Scientific\b|North-Holland\b|CRC\b|Dover\b|MIT Press\b))")
 # Astronomy: "White, S. D. M., and Rees, M. J. 1978, MNRAS, 183, 341": the year follows the authors
-_YEAR_AFTER_AUTHORS = re.compile(r"\s+((?:1[89]|20)\d\d)[a-z]?[,.:]\s+")
+_YEAR_AFTER_AUTHORS = re.compile(r"\s+((?:1[6-9]|20)\d\d)[a-z]?[,.:]\s+")
 _JOURNAL_ONLY = re.compile(rf"\s*\x05?\s*(?:arXiv\b[\w\s\-]*|{_JOURNAL_WORD}(?:\s+{_JOURNAL_WORD}){{0,7}})\s*\x06?"
                            r"\s*(?:,?\s*[A-Z]?\d|,?\s*(?:in press|in prep|submitted|accepted|arXiv)|[\s,.;]*$)")
 
@@ -687,6 +687,18 @@ def parse_free_text(raw: str, label: str | None = None) -> dict:
 # Named fields (.bib, amsrefs, \bibinfo) -> row values
 # ---------------------------------------------------------------------------
 
+
+
+def _journal_text(value: str | None) -> str | None:
+    """Expand common astronomy journal macros before latex_to_text drops them."""
+    if not value:
+        return None
+    from reference_parser.bibitem_parser import JOURNAL_MACROS
+    known = re.compile(r"\\([A-Za-z]+)(?![A-Za-z@])")
+    raw = known.sub(lambda m: JOURNAL_MACROS.get(m.group(1), m.group(0)), value)
+    return clean_field(raw)
+
+
 def from_fields(f: dict, entry_type: str | None) -> dict:
     """Row values of an entry with named fields."""
     title = clean_field(f.get("title") or (f.get("booktitle") if entry_type in ("proceedings", "book") else None))
@@ -704,7 +716,7 @@ def from_fields(f: dict, entry_type: str | None) -> dict:
         found = re.search(r"\\url\s*\{([^{}]+)\}|https?://[^\s{}]+", how)
         url = (found.group(1) or found.group(0)) if found else None
     url = url or (f"https://arxiv.org/abs/{arxiv}" if arxiv else None) or (f"https://doi.org/{doi}" if doi else None)
-    journal = clean_field(f.get("journal") or f.get("journaltitle") or
+    journal = _journal_text(f.get("journal") or f.get("journaltitle") or
                           (f.get("booktitle") if entry_type not in ("proceedings", "book") else None) or
                           f.get("series"))
     if not journal and arxiv:
