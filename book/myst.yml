@@ -1,0 +1,33 @@
+# Jupyter Book 2 (MyST) configuration. Build with:
+#   jupyter book build --html --execute
+version: 1
+project:
+  id: f8ab0272-438a-4bbc-8e99-d8ad19b95588
+  title: "arXiv Project — Nhóm 11"
+  description: "Báo cáo đồ án arXiv của Nhóm 11, môn Nhập môn Khoa học Dữ liệu."
+  authors:
+    - name: Nhóm 11
+  github: https://github.com/mituleefam/group11-arxiv-project-jupyter-book
+  exclude:
+    - .venv_book/**
+    - _build/**
+    - data/**
+  toc:
+    - file: index.md
+    - title: "Milestone 1 — Thu thập dữ liệu"
+      children:
+        - file: notebooks/01_intro.md
+        - file: notebooks/02_methodology.ipynb
+        - file: notebooks/03_data_organization.ipynb
+        - file: notebooks/04_crawling_results.ipynb
+        - file: notebooks/05_performance.ipynb
+        - file: notebooks/06_errors_limitations.ipynb
+        - file: notebooks/07_conclusion.md
+    # Milestone 2 adds its own part here, e.g.:
+    # - title: "Milestone 2 — Phân tích cú pháp và chuẩn hóa"
+    #   children:
+    #     - file: notebooks/m2/01_intro.md
+site:
+  template: book-theme
+  options:
+    hide_footer_links: false

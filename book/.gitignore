@@ -1,0 +1,4 @@
+_build/
+.venv_book/
+__pycache__/
+.ipynb_checkpoints/

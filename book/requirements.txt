@@ -1,0 +1,4 @@
+jupyter-book==2.1.7
+ipykernel
+pandas==3.0.6
+plotly==7.1.0

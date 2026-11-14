@@ -20,7 +20,11 @@ src/
 ├── common.py        data layout, status codes, manifest, CSV logs
 └── requirements.txt
 environment.yml      conda environment (installs src/requirements.txt)
+book/                source of the Jupyter Book report (see section 8)
 ```
+
+**Report (Jupyter Book):** <https://mituleefam.github.io/group11-arxiv-project-jupyter-book/>.
+Its source is in [`book/`](book/), and section 8 explains how to build it.
 
 ## 1. Setting up the environment
 
@@ -495,4 +499,51 @@ python src/export_report_data.py \
 
 It writes small aggregated tables (counts, sizes, statuses, timings, RAM/disk samples; no LaTeX text and no
 reference titles) that the book's notebooks read at build time. It sends no request and changes nothing in the
-data folders. Commit the resulting `data/m1/` folder to the book repository, not to this one.
+data folders. Commit the resulting `data/m1/` folder to the book repository, and copy it to `book/data/m1/`
+here as well (see section 8).
+
+## 8. Report (Jupyter Book)
+
+The milestone reports form one Jupyter Book, published at
+**<https://mituleefam.github.io/group11-arxiv-project-jupyter-book/>**.
+
+The book is built and published from its own repository,
+[group11-arxiv-project-jupyter-book](https://github.com/mituleefam/group11-arxiv-project-jupyter-book),
+by a GitHub Actions workflow. [`book/`](book/) holds a copy of all its source files, so the report can be
+rebuilt from this repository alone:
+
+```
+book/
+├── myst.yml                  book configuration and table of contents (Jupyter Book 2 / MyST)
+├── index.md                  home page
+├── notebooks/                chapters: 01 and 07 are Markdown, 02–06 are notebooks
+│   └── report_utils.py       shared helpers: read data/m1/, format numbers, draw plotly figures
+├── data/m1/                  aggregated Milestone 1 tables written by src/export_report_data.py
+└── requirements.txt          packages for building the book
+```
+
+Every figure and table is computed from `book/data/m1/` while the book compiles. The notebooks do not read
+the raw corpus, so no crawled data is needed to build the book.
+
+### 8.1. Building the book locally
+
+The book needs Python 3.11+ (pandas 3 requires it; GitHub Actions uses 3.12) and Node.js 18+; it offers to install Node.js if it is missing.
+
+```bash
+cd book
+python -m venv .venv_book
+source .venv_book/bin/activate          # Windows: .venv_book\Scripts\activate
+pip install -r requirements.txt
+jupyter book start --execute            # live preview at http://localhost:3000
+jupyter book build --html --execute     # static site in book/_build/html
+```
+
+Activate the environment before building. Otherwise `jupyter` is not on the PATH and `--execute` fails with
+*Could not load Jupyter session manager*.
+
+### 8.2. Updating the book
+
+1. Edit the chapters in the book repository, or regenerate `data/m1/` with `src/export_report_data.py`
+   (section 7.9), then push to its `main` branch. The workflow rebuilds the book and republishes it.
+2. Copy the changed files into `book/` here, leaving out `.git/`, `.github/`, `.venv_book/` and `_build/`,
+   so that both copies stay the same.

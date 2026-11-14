@@ -1,0 +1,15 @@
+{
+  "generated_at": "2026-11-01T23:55:06Z",
+  "code_commit": "af7f268505fd3a444dab719ab54715ab0b78209e",
+  "members": [
+    "AQuan",
+    "GBao",
+    "Phat",
+    "Thu",
+    "Tram"
+  ],
+  "one_machine": true,
+  "assigned_ids": true,
+  "paper_timings": true,
+  "warnings": []
+}

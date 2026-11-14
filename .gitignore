@@ -1,5 +1,7 @@
 # Crawled data, working files and logs never go into the code repository
 data/
+# ...except the small aggregated tables the Jupyter Book reads (book/data/m1/)
+!book/data/
 corpus/
 work/
 logs/
