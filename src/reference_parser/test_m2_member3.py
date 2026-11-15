@@ -227,6 +227,12 @@ class DedupTest(unittest.TestCase):
         self.assertEqual(convert(parse(DOC % r"\cite{x}", {"r.bib": bib}))[0]["url"], "https://arxiv.org/abs/2106.09685")
         bib = "@article{y, title={Y}, url={https://pubmed.org/1}, eprint={2106.09685}, eprinttype={pubmed}}"
         self.assertEqual(convert(parse(DOC % r"\cite{y}", {"r.bib": bib}))[0]["url"], "https://pubmed.org/1")
+        for extra in ("eprint={arXiv:2106.09685}", "eprint={2106.09685v2}", "doi={10.48550/arXiv.2106.09685}"):
+            bib = "@article{z, title={Z}, url={https://github.com/z}, %s}" % extra
+            self.assertEqual(convert(parse(DOC % r"\cite{z}", {"r.bib": bib}))[0]["url"],
+                             "https://arxiv.org/abs/2106.09685", extra)
+        bib = "@article{o, title={O}, eprint={math.AG/0101001}, archivePrefix={arXiv}}"
+        self.assertEqual(convert(parse(DOC % r"\cite{o}", {"r.bib": bib}))[0]["url"], "https://arxiv.org/abs/math/0101001")
         lora = dict(title="LoRA: Low-rank adaptation of large language models", authors=["Hu, Edward"], year=2021)
         rows, _ = dedup({1: [row("lora", url="https://github.com/microsoft/LoRA", **lora)],
                          2: [row("lora", journal="arXiv preprint arXiv:2106.09685", **lora)]})

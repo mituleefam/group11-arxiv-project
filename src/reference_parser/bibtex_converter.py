@@ -39,7 +39,7 @@ import datetime
 import logging
 import re
 
-from reference_parser.ref_text import (URL_RE, clean_field, strip_end, find_arxiv_id, find_doi, latex_to_text, normalize_doi,
+from reference_parser.ref_text import (URL_RE, clean_field, strip_end, arxiv_id_key, find_arxiv_id, find_doi, latex_to_text, normalize_doi,
                       read_braced, skip_spaces)
 
 log = logging.getLogger("m2.references")
@@ -699,7 +699,7 @@ def _journal_text(value: str | None) -> str | None:
     return clean_field(raw)
 
 
-_BARE_ARXIV = re.compile(r"\d{4}\.\d{4,5}(?:v\d+)?|[a-z-]+(?:\.[A-Z]{2})?/\d{7}(?:v\d+)?")  # eprint without archivePrefix
+_BARE_ARXIV = re.compile(r"\d{4}\.\d{4,5}(?:v\d+)?|[a-z-]+(?:\.[a-z]{2})?/\d{7}(?:v\d+)?", re.I)  # bare eprint id
 
 
 def from_fields(f: dict, entry_type: str | None) -> dict:
@@ -710,10 +710,13 @@ def from_fields(f: dict, entry_type: str | None) -> dict:
     doi = normalize_doi(f.get("doi")) or find_doi(f.get("url", "")) or find_doi(f.get("note", ""))
     eprint = f.get("eprint", "")
     archive = (f.get("archiveprefix") or f.get("eprinttype") or "").lower()
-    arxiv = find_arxiv_id(eprint if "arxiv" in archive else "") or (
-        eprint.strip().lower() if "arxiv" in archive and eprint.strip() else None) or (
-        eprint.strip() if not archive and _BARE_ARXIV.fullmatch(eprint.strip()) else None) or \
-        find_arxiv_id(f.get("journal", "")) or find_arxiv_id(f.get("url", "")) or find_arxiv_id(f.get("note", ""))
+    arxiv = None
+    if "arxiv" in archive or not archive:      # eprint={2106.09685} or {arXiv:2106.09685}, prefix or not
+        e = eprint.strip()
+        arxiv = find_arxiv_id(e) or (arxiv_id_key(e) if _BARE_ARXIV.fullmatch(e) else None) or (
+            e.lower() if "arxiv" in archive and e else None)
+    arxiv = arxiv or find_arxiv_id(doi) or find_arxiv_id(f.get("journal", "")) or \
+        find_arxiv_id(f.get("url", "")) or find_arxiv_id(f.get("note", ""))
     url = latex_to_text(f.get("url")) or None
     if not url:
         how = f.get("howpublished", "") + " " + f.get("note", "")

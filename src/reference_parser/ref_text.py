@@ -277,7 +277,15 @@ def find_arxiv_id(s: str | None) -> str | None:
     if not s:
         return None
     m = ARXIV_RE.search(s)
-    return m.group(1).lower() if m else None
+    return arxiv_id_key(m.group(1)) if m else None
+
+
+def arxiv_id_key(s: str) -> str:
+    """An arXiv id as stored: lower case, no version, old ids without the
+    subject class (math.AG/0101001 -> math/0101001, the form arXiv and
+    Semantic Scholar use)."""
+    s = re.sub(r"v\d+$", "", s.strip().lower())
+    return re.sub(r"^([a-z\-]+)\.[a-z]{2}/", r"\1/", s)
 
 
 def normalize_url(s: str | None) -> str | None:
