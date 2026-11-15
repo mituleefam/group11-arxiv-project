@@ -219,6 +219,20 @@ class DedupTest(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         self.assertEqual(rename, {"a": "b", "d": "c"})
 
+    def test_url_keeps_arxiv_id(self):
+        bib = "@article{lora, title={LoRA}, url={https://github.com/microsoft/LoRA}, eprint={2106.09685}}"
+        r = convert(parse(DOC % r"\cite{lora}", {"refs.bib": bib}))[0]
+        self.assertEqual(r["url"], "https://arxiv.org/abs/2106.09685")
+        bib = "@article{x, title={X}, url={https://openreview.net/x}, eprint={2106.09685}, archivePrefix={arXiv}}"
+        self.assertEqual(convert(parse(DOC % r"\cite{x}", {"r.bib": bib}))[0]["url"], "https://arxiv.org/abs/2106.09685")
+        bib = "@article{y, title={Y}, url={https://pubmed.org/1}, eprint={2106.09685}, eprinttype={pubmed}}"
+        self.assertEqual(convert(parse(DOC % r"\cite{y}", {"r.bib": bib}))[0]["url"], "https://pubmed.org/1")
+        lora = dict(title="LoRA: Low-rank adaptation of large language models", authors=["Hu, Edward"], year=2021)
+        rows, _ = dedup({1: [row("lora", url="https://github.com/microsoft/LoRA", **lora)],
+                         2: [row("lora", journal="arXiv preprint arXiv:2106.09685", **lora)]})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["url"], "https://arxiv.org/abs/2106.09685")
+
     def test_reused_key_for_another_work(self):
         rows, rename = dedup({1: [row("1", title="Attention is all you need", year=2017)],
                               2: [row("1", title="Graph neural networks: a review", year=2020)]})

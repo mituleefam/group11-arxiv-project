@@ -262,6 +262,10 @@ def _best(members: list[_Ref], field: str):
         if field == "entry_type" and value == "misc":
             continue
         candidates.append((r, value))
+    if field == "url":                     # keep an arXiv id seen in any member (no eprint column)
+        arxiv = next((r.arxiv for r in sorted(members, key=lambda r: -r.version) if r.arxiv), None)
+        if arxiv:
+            return f"https://arxiv.org/abs/{arxiv}"
     if not candidates:
         return "misc" if field == "entry_type" else ([] if field == "authors" else None)
     agree = Counter(_norm(v) for _, v in candidates)

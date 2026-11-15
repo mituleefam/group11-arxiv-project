@@ -13,7 +13,7 @@ it):
     year          int (1800 .. next year) or None
     doi           "10.xxxx/..." lower case, no resolver prefix, or None
     journal       journal, or the proceedings / book a paper appears in
-    url           a link: url field, arXiv abs page, or doi.org link
+    url           a link: arXiv abs page, else url field, else doi.org link
 
 and one private column, "_source" ("bib", "bibitem", ...), used by
 dedup_bibtex to prefer structured values; the pipeline drops it.
@@ -565,8 +565,8 @@ def parse_free_text(raw: str, label: str | None = None) -> dict:
     arxiv = find_arxiv_id(" ".join(urls)) or find_arxiv_id(latex_to_text(raw))
     page = next((u.rstrip(".,;") for u in urls if "doi.org" not in u.lower()), None)
     out["doi"] = doi
-    out["url"] = page or (f"https://arxiv.org/abs/{arxiv}" if arxiv else None) or (
-        f"https://doi.org/{doi}" if doi else None)
+    out["url"] = (f"https://arxiv.org/abs/{arxiv}" if arxiv else None) or page or (
+        f"https://doi.org/{doi}" if doi else None)       # arXiv first: the table has no eprint column
 
     # 2. text with markers: \x00 block end (\newblock), \x05 ... \x06 italics
     raw = _NEWBLOCK.sub("\x00", raw)
@@ -699,6 +699,9 @@ def _journal_text(value: str | None) -> str | None:
     return clean_field(raw)
 
 
+_BARE_ARXIV = re.compile(r"\d{4}\.\d{4,5}(?:v\d+)?|[a-z-]+(?:\.[A-Z]{2})?/\d{7}(?:v\d+)?")  # eprint without archivePrefix
+
+
 def from_fields(f: dict, entry_type: str | None) -> dict:
     """Row values of an entry with named fields."""
     title = clean_field(f.get("title") or (f.get("booktitle") if entry_type in ("proceedings", "book") else None))
@@ -708,14 +711,16 @@ def from_fields(f: dict, entry_type: str | None) -> dict:
     eprint = f.get("eprint", "")
     archive = (f.get("archiveprefix") or f.get("eprinttype") or "").lower()
     arxiv = find_arxiv_id(eprint if "arxiv" in archive else "") or (
-        eprint.strip().lower() if "arxiv" in archive and eprint.strip() else None) or \
+        eprint.strip().lower() if "arxiv" in archive and eprint.strip() else None) or (
+        eprint.strip() if not archive and _BARE_ARXIV.fullmatch(eprint.strip()) else None) or \
         find_arxiv_id(f.get("journal", "")) or find_arxiv_id(f.get("url", "")) or find_arxiv_id(f.get("note", ""))
     url = latex_to_text(f.get("url")) or None
     if not url:
         how = f.get("howpublished", "") + " " + f.get("note", "")
         found = re.search(r"\\url\s*\{([^{}]+)\}|https?://[^\s{}]+", how)
         url = (found.group(1) or found.group(0)) if found else None
-    url = url or (f"https://arxiv.org/abs/{arxiv}" if arxiv else None) or (f"https://doi.org/{doi}" if doi else None)
+    # arXiv first: the table has no eprint column, so a GitHub/venue `url` would hide the id
+    url = (f"https://arxiv.org/abs/{arxiv}" if arxiv else None) or url or (f"https://doi.org/{doi}" if doi else None)
     journal = _journal_text(f.get("journal") or f.get("journaltitle") or
                           (f.get("booktitle") if entry_type not in ("proceedings", "book") else None) or
                           f.get("series"))
