@@ -527,6 +527,7 @@ src/
 ├── group_benchmark_m2.py aggregates 5 M2 member ranges; invoked by group_benchmark.py --m2
 ├── test_m2_full_fixes.py regression tests for M2 bug-fix cases
 ├── statistics_m2.py      the numbers of the report
+├── export_report_data_m2.py  the small tables of the Jupyter Book's Milestone 2 part
 └── benchmark_colab_m2.ipynb   all the steps below on Google Colab, CPU-only
 ```
 
@@ -671,3 +672,19 @@ version folders, `parsed/` and the `.bib`/`.bbl` files and records the evidence 
 (for example `content_present_but_no_hierarchy_edges` for an empty tree whose source has text).
 A confirmed parser defect gets a regression test and a new `--force` run; zero `FAIL` alone does not
 prove that every citation was matched.
+
+### 8.8. The report data (`export_report_data_m2.py`)
+
+The book is built by GitHub Actions, which cannot read the results on Google Drive, and the parsed text must
+not be published before Milestone 3. After the notebook's sections 8–11, `export_report_data_m2.py` reads the
+result folder (`RESULT_DRIVE`, one `<range>_m2.tar.gz` per range and `_merged/`) without extracting it and writes
+small aggregated tables (counts, sizes, statuses, timings; no LaTeX text, no reference titles) into the book:
+
+```bash
+python src/export_report_data_m2.py --results /content/drive/MyDrive/g11_m2_benchmark \
+    --out <book repository>/data/m2
+```
+
+A range can also be given as `NAME=PATH` (a `.tar.gz` or a range's data folder) with `--merged _MERGED_DIR`.
+Commit the book's `data/m2/`; see its `README.md` for the files.
+
