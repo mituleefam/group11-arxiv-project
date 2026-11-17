@@ -263,3 +263,50 @@ Chọn 0,85. Xem bằng mắt 12 cặp mới (có ở 0,85, không có ở `word
 Lưu ý quan trọng: R3 (cho phép năm lệch khi tác giả trùng), cùng với độ đo và ngưỡng của R4, đều được chỉnh sau khi xem chính 168 nhãn này. Lúc đầu R3 đòi năm lệch ≤ 1 và bỏ sót 5 bản tạp chí đăng sau bản preprint 2–3 năm. Vì vậy con số trên **lạc quan**. Số đo khách quan là đo trên nhãn tay của 4 khoảng còn lại, những nhãn chưa dùng để chỉnh luật.
 
 Kiểm tra bằng mắt 15 cặp R4 ngẫu nhiên: cả 15 cặp đều đúng. Các dạng gặp: thừa chữ `blue` (lệnh màu LaTeX còn sót lại), `Embodied SAM` ↔ `EmbodiedSAM`, `^4He` ↔ `4 He`, title thiếu tiền tố `REALM:`.
+
+## Bước 4: gộp nhãn (`merge_labels.py`) và cách dùng nhãn
+
+```bash
+# gộp mọi labels_manual_*.csv + labels_auto.csv -> WORK/labels.csv
+python src/m3/merge_labels.py --work data/m3_all --suspects data/m3_all/suspect_auto_labels.csv
+# khi các thành viên còn đang gán: các mức tối thiểu chỉ in cảnh báo
+python src/m3/merge_labels.py --work data/m3_all --suspects data/m3_all/suspect_auto_labels.csv --allow-incomplete
+
+# chia tập (script của Member 1)
+python src/m3/split.py --labels data/m3_all/labels.csv --members 5 --seed 11 \
+    --stats data/m3_all/split_rankable.csv --out data/m3_all/splits.json
+
+python src/m3/test_m3_merge_labels.py
+```
+
+**File ra**
+
+| File | Nội dung |
+|---|---|
+| `labels.csv` | mọi entry đã được quyết định (nhãn tay và nhãn auto), các cột như file nhãn tay cộng thêm `range`. Giữ cả dòng `is_match = false`, vì bảng `predictions` có một dòng cho **mỗi** entry của các bài dùng cho matching (dòng không có reference thì `groundtruth_arxiv_id = null`). |
+| `label_summary.csv` | theo khoảng: số bài, số entry, số nhãn tay và nhãn auto, số bài auto cần có |
+| `split_rankable.csv` | `arxiv_id, n` dùng cho `split.py --stats`. Các bài **không được** vào test/valid có `n = 0`: bài không có reference, bài auto không ra nhãn nào, bài có nhãn auto đã biết là sai (`--suspects`) |
+
+**Kiểm tra (lỗi thì dừng, không ghi file)**
+- cột đúng; `source` là `manual` hoặc `auto`; `is_match` khớp với `label_ref_arxiv_id`;
+- entry có trong `entries_clean.parquet` và chỉ xuất hiện một lần;
+- nhãn là reference có arXiv ID của **chính bài đó**;
+- không bài nào vừa tay vừa auto; không bài trong `manual_pick.csv` lọt vào nhãn auto;
+- theo từng khoảng: ≥ 5 bài tay, mỗi bài ≥ 20 nhãn, ≥ 100 nhãn tay, và số bài auto ≥ 10% số bài ngoài phần gán tay. Với `--allow-incomplete`, các mức này chỉ in cảnh báo.
+
+`data/m3_all/suspect_auto_labels.csv` liệt kê 13 nhãn auto đã biết là sai hoặc đáng ngờ (xem "Kiểm tra cuối" ở bước 3). Các nhãn này vẫn nằm trong train, vì 0,02% nhiễu không đáng kể khi train. Nhưng bài chứa chúng không được rút vào test/valid, để MRR không bị chấm theo đáp án sai.
+
+**Hiện tại** (chỉ có nhãn tay của Bao, chạy với `--allow-incomplete`): 2.505 bài, 124.767 entry, **62.769 nhãn** (168 nhãn tay + 62.601 nhãn auto). 19 bài bị giữ ngoài test/valid. Chưa chia tập được, vì `split.py` cần 10 bài tay (5 cho test, 5 cho valid), mà hiện mới có 5.
+
+### Cách dùng nhãn cho đặc trưng, train và đánh giá (Member 3, 4)
+
+Theo giải đáp của thầy, **một nhãn là một cặp (entry, reference) khớp**. Entry có `is_match = false` **không phải là sample**.
+
+- **Sample** = mỗi entry có `is_match = true`. Ứng viên của nó là **n reference của chính bài đó** (các dòng trong `candidates.parquet`):
+  - 1 cặp **yes**: `(entry, label_ref_arxiv_id)`;
+  - n − 1 cặp **no**: các reference còn lại của bài.
+- **Không** tạo cặp "no" từ các entry `is_match = false`. Luật auto ưu tiên precision nên cố ý bỏ sót một số cặp khớp thật. Nếu coi các entry đó là toàn "no" thì sẽ dạy sai model.
+- **MRR@5:** |Q| = số entry `is_match = true` của tập test. Ứng viên lấy từ references của chính bài đó. Bài có dưới 5 ứng viên thì các ô `cand_k` còn thiếu để null.
+- **Bảng `predictions`:** một dòng cho mọi entry trong `labels.csv` (cả `true` lẫn `false`). Cột `partition` lấy từ `splits.json`; `groundtruth_arxiv_id` = `label_ref_arxiv_id` (để trống nếu `false`).
+- **Chia tập** theo bài (`splits.json`); một bài không bao giờ vừa ở train vừa ở test.
+- **Bài auto trong test được chấm theo nhãn do luật tạo ra.** Nếu đặc trưng của model gồm đúng các tín hiệu của luật (trùng ID, trùng DOI, title giống hệt) thì MRR trên phần auto sẽ cao gần như hiển nhiên. Vì vậy nên báo MRR **riêng** cho phần tay và phần auto, và báo thêm MRR khi che các đặc trưng link (xem phần "học đường tắt").
