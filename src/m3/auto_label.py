@@ -27,7 +27,11 @@ Rules, inside one publication, every entry against every reference:
                        both known; the reference has two: arXiv v1 and Semantic
                        Scholar) or the authors agree (a journal version cited
                        years after the preprint: 5 of the 168 manual labels of
-                       the GBao range are such pairs, 2 to 3 years apart)
+                       the GBao range are such pairs, 2 to 3 years apart);
+                       a title of <= SHORT_TITLE (5) words is refused when both
+                       sides name authors and they do not agree ("Generative
+                       adversarial networks" by Goodfellow is not the 2022
+                       review of the same title by Cohen and Giryes)
   R4 close title       title similarity >= --fuzzy (0.85), with --sim chars
                        (default): Jaccard of the character 3-grams of the title
                        without spaces, so "M 2 diffuser" = "M2Diffuser" and a
@@ -37,16 +41,30 @@ Rules, inside one publication, every entry against every reference:
                        same first author surname or half of the surnames shared,
                        years at most 1 apart when both known
 R1-R3 are exact; when they name different references the entry is left
-without label ("conflict"). R4 is tried only when R1-R3 found nothing. When
-several entries get the same reference, an R3/R4 label that collides with an
-R1/R2 one is dropped; equal strength ones are kept (the same work cited under
-two keys) and marked "shared". Precision first: an entry is left without label
-rather than labelled on weak evidence.
+without label ("conflict"). R4 is tried only when R1-R3 found nothing.
+
+An id or DOI written by the author can be wrong (pasted from another paper),
+so an R1/R2 label is checked against the title ("id_mismatch", no label):
+  - always: the entry has a full title (>= 4 words, not a fragment such as
+    "Phys" or "Arxiv: 2310.10746" left by a garbled entry), its similarity with
+    the reference title is < MISMATCH (0.15) and the authors do not agree;
+  - when another entry of the publication reaches the same reference by its
+    title (similarity >= --fuzzy): the R1/R2 entry has a full title of
+    similarity < MISMATCH whatever the authors (a wrongly pasted id usually
+    belongs to a paper of the same group), or < MISMATCH_OTHER_AUTHORS (0.30)
+    when the authors do not agree (every renamed paper seen kept its authors).
+MISMATCH is low on purpose: papers renamed between arXiv versions keep their
+id with a title of similarity 0.16 to 1.0 (MonST3R 0.16, Emergent
+Misalignment 0.21, MathVista 0.41), wrongly pasted ids gave 0.07 to 0.21.
+Several entries left with the same reference are all kept and marked
+"shared": in 92 of 102 such cases checked, the same work was cited under two
+keys (twice in the .bib, preprint and published version, or one entry garbled
+by M2), so every one of them is a label.
 
 Output: labels_auto.csv, one row per entry of the pool publications, in the
 format of the manual labels (label_sheet.py import):
     arxiv_id, citation_key, label_ref_arxiv_id, is_match, source=auto, labeler=auto, note
-note = the rule (R1..R4), "conflict ..." or "shared ...". Only is_match = true
+note = the rule (R1..R4), "conflict ...", "id_mismatch ..." or "... shared ...". Only is_match = true
 rows are labels.
 
 --evaluate: runs the same rules on the publications of manual label files and
@@ -72,6 +90,9 @@ from select_manual import GROUP_RANGES, id_key, range_of  # noqa: E402
 
 LABEL_COLS = ["arxiv_id", "citation_key", "label_ref_arxiv_id", "is_match", "source", "labeler", "note"]
 STRONG = ("R1", "R2")
+MISMATCH = 0.15  # title similarity under which an id / DOI label is doubted (see id_mismatch)
+SHORT_TITLE = 5  # R3: a title this short is shared by other works; the authors must not conflict
+MISMATCH_OTHER_AUTHORS = 0.30  # the same, when another entry has the reference and the authors differ
 ENTRY_COLS = ["arxiv_id", "citation_key", "title_clean", "authors_last", "first_author_last", "year", "doi",
               "arxiv_id_in_entry"]
 REF_COLS = ["arxiv_id", "ref_arxiv_id", "title_clean", "authors_last", "year", "year_s2", "doi"]
@@ -97,6 +118,26 @@ def similarity(kind: str, a, b) -> float:
 def years_close(year, ref: dict, gap: int = 1) -> bool:
     years = [y for y in (ref["year"], ref["year_s2"]) if y]
     return not year or not years or min(abs(year - y) for y in years) <= gap
+
+
+NOT_NAMES = {"al", "others", "anonymous"}  # what is left of "et al." or a missing author list
+
+
+GROUP_WORDS = ("team", "openai", "google", "deepmind", "meta", "anthropic", "collaboration", "consortium",
+               "project", "group", "lab", "inc", "corporation", "university")
+
+
+def authors_conflict(entry: dict, ref: dict) -> bool:
+    """Both sides name real persons and no surname agrees, not even as a
+    transliteration (shanskii / shansky). An organisation as author ("Team
+    Qwen", "OpenAI") never conflicts: Semantic Scholar lists the persons."""
+    a = set(entry["authors_last"] or []) - NOT_NAMES
+    b = set(ref["authors_last"] or []) - NOT_NAMES
+    if not a or not b or authors_agree(entry, ref):
+        return False
+    if any(w in name.split() for name in a | b for w in GROUP_WORDS):
+        return False
+    return not any(difflib.SequenceMatcher(None, x, y).ratio() >= 0.8 for x in a for y in b)
 
 
 def authors_agree(entry: dict, ref: dict) -> bool:
@@ -130,8 +171,8 @@ class Paper:
         if e["doi"] and len(self.doi.get(e["doi"], ())) == 1:
             found["R2"] = next(iter(self.doi[e["doi"]]))
         same = self.title.get(e["title_clean"] or "", [])
-        if len(same) == 1 and len(e["title_clean"].split()) >= 3 and (
-                years_close(e["year"], same[0]) or authors_agree(e, same[0])):
+        n_words = len((e["title_clean"] or "").split())
+        if len(same) == 1 and n_words >= 3 and (years_close(e["year"], same[0]) or authors_agree(e, same[0]))                 and not (n_words <= SHORT_TITLE and authors_conflict(e, same[0])):
             found["R3"] = same[0]["ref_arxiv_id"]
         return found
 
@@ -151,8 +192,26 @@ class Paper:
         return best["ref_arxiv_id"]
 
 
+def full_title(title: str | None) -> bool:
+    """A real title, not a fragment M2 kept from a garbled entry: "Phys", "arxiv 2310 10746",
+    a journal reference ("phys a 20 3765 hep ex 0409052", "chaos solitons fractals 202") or
+    author initials ("m e j newman", "he and x d ji")."""
+    w = (title or "").split()
+    if len(w) < 4 or "arxiv" in w:
+        return False
+    if any(x.isdigit() for x in w) and len(w) <= 8:  # volume / page numbers
+        return False
+    return 2 * sum(len(x) <= 2 for x in w) < len(w)  # mostly initials
+
+
+def title_similarity(entry: dict, ref: dict) -> float:
+    return similarity("chars", grams(entry["title_clean"]), grams(ref["title_clean"]))
+
+
 def label_paper(entries: list[dict], paper: Paper, threshold: float, margin: float,
-                kind: str = "chars") -> list[dict]:
+                kind: str = "chars", mismatch: float = MISMATCH) -> list[dict]:
+    refs = {r["ref_arxiv_id"]: r for r in paper.refs}
+    by_key = {e["citation_key"]: e for e in entries}
     out = []
     for e in entries:
         found = paper.exact(e)
@@ -162,6 +221,9 @@ def label_paper(entries: list[dict], paper: Paper, threshold: float, margin: flo
         elif found:
             rule = min(found)  # R1 before R2 before R3
             rid, note = found[rule], rule
+            if rule in STRONG and full_title(e["title_clean"]) and refs[rid]["title_clean"] and (
+                    title_similarity(e, refs[rid]) < mismatch and not authors_agree(e, refs[rid])):
+                rid, note = None, f"id_mismatch {rule}->{found[rule]}: other title, other authors"
         else:
             rid = paper.fuzzy(e, threshold, margin, kind)
             note = "R4" if rid else ""
@@ -174,12 +236,20 @@ def label_paper(entries: list[dict], paper: Paper, threshold: float, margin: flo
     for rid, xs in by_ref.items():
         if len(xs) < 2:
             continue
-        strong = [x for x in xs if x["note"] in STRONG]
-        for x in xs:
-            if strong and x["note"] not in STRONG:  # a weaker label that collides with an exact id / DOI one
-                x["note"] = f"conflict {x['note']}->{rid} (taken by {strong[0]['citation_key']})"
+        ref = refs[rid]
+        weak_close = [x for x in xs if x["note"] not in STRONG
+                      and title_similarity(by_key[x["citation_key"]], ref) >= threshold]
+        for x in xs:  # an id / DOI label whose own title is another paper, while a title match is this one
+            e = by_key[x["citation_key"]]
+            sim = title_similarity(e, ref)
+            if x["note"] in STRONG and weak_close and full_title(e["title_clean"]) and (
+                    sim < mismatch or (sim < MISMATCH_OTHER_AUTHORS and not authors_agree(e, ref))):
+                x["note"] = (f"id_mismatch {x['note']}->{rid}: title of another paper, {rid} is "
+                             f"{weak_close[0]['citation_key']}")
                 x["label_ref_arxiv_id"] = ""
-            else:
+        kept = [x for x in xs if x["label_ref_arxiv_id"]]
+        if len(kept) > 1:  # the same work cited under several keys: every one is a label
+            for x in kept:
                 x["note"] += f" shared {rid}"
     for x in out:
         x["is_match"] = "true" if x["label_ref_arxiv_id"] else "false"

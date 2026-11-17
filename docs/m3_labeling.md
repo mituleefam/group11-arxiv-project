@@ -131,3 +131,135 @@ Dòng `is_match = false` vẫn được giữ trong file để biết entry đó
 Ngoài ra `import` còn cảnh báo (vẫn ghi file) khi:
 - người gán có dưới 100 cặp khớp;
 - một reference là nhãn của nhiều entry trong cùng bài (thường là cùng một tài liệu bị trích hai lần, cần xem lại).
+
+## Bước 3: gán nhãn tự động (`auto_label.py`)
+
+```bash
+# gán tự động -> WORK/labels_auto.csv
+python src/m3/auto_label.py --work data/m3_all
+
+# đo chất lượng luật trên nhãn tay (chỉ để đo, không ghi nhãn)
+python src/m3/auto_label.py --work data/m3_all --evaluate data/m3_all/labels_manual_*.csv --errors data/m3_all/auto_vs_manual.csv
+
+python src/m3/test_m3_auto_label.py
+```
+
+**Chọn bài (pool auto).** Theo thầy, 10% tính theo **số bài** ngoài phần gán tay, cho mỗi thành viên: ceil(0,10 × (5000 − 5)) = **500 bài mỗi khoảng**, cả nhóm 2.500 bài.
+
+- Các bài trong `manual_pick.csv` **không bao giờ** được rút vào pool auto.
+- Chỉ rút từ bài có trạng thái S2 `success`, m ≥ 1 và n ≥ 5. Bài không có reference thì không sinh được nhãn, còn bài auto vào test/valid thì cần có ứng viên để xếp hạng.
+- Rút ngẫu nhiên với seed cố định theo từng khoảng.
+- Muốn lấy nhiều hơn thì dùng `--fraction`.
+
+**Luật** (định sẵn từ trước, không phải model). Các luật chạy trong một bài, theo thứ tự:
+
+| Luật | Điều kiện |
+|---|---|
+| R1 | trùng arXiv ID |
+| R2 | trùng DOI, kể cả DOI arXiv `10.48550/arxiv.<id>` |
+| R3 | `title_clean` trùng đúng một reference, title ≥ 3 từ, và (năm lệch ≤ 1 hoặc tác giả trùng); title ≤ 5 từ thì tác giả hai bên không được mâu thuẫn |
+| R4 | title giống ≥ 0,85, hơn reference giống thứ hai ≥ 0,10, tác giả trùng (họ tác giả đầu, hoặc ≥ một nửa các họ), năm lệch ≤ 1 |
+
+**Xử lý trường hợp nhập nhằng**
+
+*(a) Các luật mâu thuẫn trên một entry.* R1–R3 chỉ ra hai reference khác nhau → không gán nhãn, `note` ghi `conflict`.
+
+*(b) Kiểm tra lại nhãn R1/R2 (`id_mismatch`).* arXiv ID/DOI do tác giả ghi **cũng có thể sai**: tác giả dán nhầm ID của một bài khác, thường là bài khác của cùng nhóm, hoặc DOI bị gắn nhầm bài. Vì vậy nhãn R1/R2 bị bỏ (`note` ghi `id_mismatch …`) khi:
+- entry có **title đầy đủ**, **và**
+- title của entry giống title reference **< 0,15**, **và** thoả một trong hai điều kiện:
+  - tác giả không trùng, **hoặc**
+  - có một entry khác cùng bài khớp reference đó **theo title** (độ giống ≥ 0,85). Khi đó entry kia mới là bài đó, và nhãn được giao cho entry kia.
+
+  Trong trường hợp có entry khác như vậy, ngưỡng được nới lên **< 0,30 nếu tác giả không trùng**. Lý do: mọi bài đổi tên đã gặp đều giữ nguyên tác giả. Ví dụ bắt được nhờ nới ngưỡng: `autobio2024` ("Autobio: A benchmark for robotic biology labs", tác giả "Team AutoBio") mang ID của Chemistry3D (Li, Huang…), độ giống 0,21.
+
+"Title đầy đủ" nghĩa là ≥ 4 từ và không phải mảnh vỡ do M2 đọc hỏng entry. Các mảnh bị loại: có chữ `arxiv`; tham chiếu tạp chí có số trong ≤ 8 từ (`Phys. A 20 3765`, `Chaos Solitons Fractals 202`); phần lớn là chữ viết tắt tên (`M. E. J. Newman`, `He and X. D. Ji`). Entry có title hỏng như vậy thì không bị nghi, vì ID/DOI của nó vẫn đúng.
+
+Vì sao ngưỡng chỉ là 0,15: **bài đổi tên giữa các phiên bản arXiv** vẫn giữ ID nhưng title khác hẳn, và độ giống của chúng trải từ 0,16 đến 1,0. Ví dụ: MonST3R 0,16; Emergent Misalignment 0,21 (bản Nature đổi tên); MathVista 0,41; PlanBench 0,54 (bản arXiv đầu tên là "LLMs Still Can't Plan"). Trong khi đó, các ID bị dán nhầm có độ giống 0,07–0,21. Hai khoảng chồng nhau, và tác giả cũng không tách được hai loại (ID dán nhầm thường là của cùng nhóm tác giả). Vì vậy chọn ngưỡng thấp, chấp nhận còn sót vài ID sai để không bỏ nhầm bài đổi tên.
+
+*(c) Nhiều entry cùng trỏ một reference → giữ tất cả, `note` ghi `shared`.* Đây là cùng một bài được trích bằng nhiều key: .bib trùng, có cả bản preprint lẫn bản đăng, hoặc một entry bị M2 đọc hỏng. Mỗi entry là một nhãn.
+
+Bản đầu xử lý (c) khác: nhãn R3/R4 tranh reference với nhãn R1/R2 thì bị bỏ. Mình đã đọc lại **102 ca bị bỏ** như vậy:
+
+| Loại | Số |
+|---|---|
+| entry bị bỏ thực ra đúng: cùng bài được trích hai lần | 66 |
+| entry bị bỏ thực ra đúng: entry R1/R2 có title bị M2 đọc hỏng | 12 |
+| entry bị bỏ thực ra đúng: entry R1/R2 là bản arXiv cũ, đã đổi tên | 15 |
+| entry bị bỏ đúng, còn **entry R1/R2 mới là cái sai** (ID dán nhầm) | ~6 |
+| chưa chắc | ~4 |
+
+Vì vậy đã đổi sang cách (b) + (c).
+
+`labels_auto.csv` cùng định dạng với nhãn tay (`source = auto`, `note` = tên luật).
+
+**Kết quả trên dữ liệu cả nhóm** (`data/m3_all`, seed 11): 2.500 bài, 124.456 entry, **62.601 nhãn**. Trung vị 20 nhãn mỗi bài (trung bình 25, tối đa 300); 7 bài không có nhãn nào.
+
+| Khoảng | Bài | Entry | Nhãn | R1 | R2 | R3 | R4 |
+|---|---|---|---|---|---|---|---|
+| Tram | 500 | 24.848 | 12.752 | 4.987 | 2.404 | 5.215 | 146 |
+| Thu | 500 | 25.562 | 12.758 | 5.217 | 2.650 | 4.772 | 119 |
+| Phat | 500 | 26.313 | 12.407 | 4.327 | 2.528 | 5.415 | 137 |
+| Bao | 500 | 24.752 | 12.344 | 4.436 | 2.429 | 5.348 | 131 |
+| Quan | 500 | 22.981 | 12.340 | 4.556 | 2.058 | 5.570 | 156 |
+| **Tổng** | **2.500** | **124.456** | **62.601** | **23.523** | **12.069** | **26.320** | **689** |
+
+Ngoài số nhãn ở bảng trên:
+- 388 nhãn mang ghi chú `shared`.
+- 9 entry bị bỏ vì các luật mâu thuẫn (`conflict`).
+- 11 nhãn R1/R2 bị bỏ vì `id_mismatch`. Đọc tay cả 11 thì đều là ID/DOI sai thật:
+  - 5 ID dán nhầm từ bài khác: `wang2024answers…`, `yang2025scalable…`, `jiang2023llmparser`, `autobio2024`, `mastqlp` (DOI của bộ dữ liệu);
+  - 6 DOI trỏ sang bài khác hẳn: `Efstathiou2022`, `Farrah2022`, `Pfeifle2019b`, `white1992density`, `merloni_fabian`, `golden2008vehicle`.
+
+So với bản trước, cả 102 entry từng bị bỏ đều đã được gán, và 11 nhãn sai bị loại; sau đó lần kiểm tra cuối (bên dưới) loại thêm 18 nhãn R3 sai: **62.528 → 62.601**.
+
+**Kiểm tra cuối** (đọc tay, không đổi luật dựa trên một ca riêng lẻ):
+
+1. **Mẫu ngẫu nhiên 40 nhãn** trên toàn bộ: cả 40 đều đúng.
+2. **R3 với title ngắn và tác giả khác nhau.** Nhóm này có lỗi: những title chung chung trùng với một bài khác hẳn. Thêm điều kiện: title ≤ 5 từ thì tác giả hai bên không được mâu thuẫn. Tác giả là tổ chức (`Team Qwen`, `OpenAI`) và họ phiên âm khác (`Shanskii`/`Shansky`) không bị coi là mâu thuẫn. Kết quả loại 18 nhãn, đọc tay cả 18 đều sai:
+   - 10 nhãn "Generative adversarial networks" (Goodfellow) bị nối nhầm vào bài tổng quan cùng tên của Cohen & Giryes (2022);
+   - "Quantum phase transitions" (sách của Sachdev ↔ bài của Vojta, 2 nhãn);
+   - "Gaia Data Release 2" (Brown ↔ Katz);
+   - "The fractional quantum Hall effect" (Störmer, Tsui ↔ Rao);
+   - "Self-guided masked autoencoder", "Retrieval Augmented Time Series Forecasting", "Interlayer pairing in bilayer nickelates", "Avoiding long Berge-cycles": mỗi title có hai bài khác nhau.
+3. **R1/R2 có title rất khác reference** (title đầy đủ, độ giống < 0,3): có 152 nhãn. Tra **title v1 trên arXiv** của từng reference (API arXiv, chỉ dùng để kiểm tra, không dùng trong luật):
+   - 104 nhãn có title entry giống title v1: là bài đổi tên, hoặc S2 lưu title lỗi (`OUP accepted manuscript`, mã MathML, `\documentclass…`). Các nhãn này **đúng**.
+   - 35 nhãn trong đó M2 lấy nhầm nơi đăng, tên tác giả hoặc tên tạp chí làm title (`In Proceedings of the 2020 CHI Conference…`). ID/DOI của các nhãn này vẫn **đúng**.
+   - **~10 nhãn sai thật**: tác giả dán ID/DOI của một bài khác **cùng nhóm**, ví dụ `rawat_rl`, `LMSWY2`, `Ball2012`, `Fiacconi2017`, `Cao2019`, `munshi_quantifying_2021`, `papadopoulos2014handbook`, `matsumoto_algebraic_2002`, `Lahiri2019`. Còn 1 nhãn trỏ vào bản ghi S2 rác (`Green:2004wb` → "paper added in error by admin team"). Luật **không bắt được** nhóm này: tác giả trùng và title khác hẳn, y như bài đổi tên.
+   - ~3 nhãn chưa chắc: `brito-etal-2025-modeling`, `RW`, `Greener2025_PNAS…`.
+
+**Ước lượng chất lượng:** đã biết khoảng 10–13 nhãn sai còn lại trên 62.601 nhãn (~0,02%). Với các nhóm chưa đọc hết thì ước lượng từ mẫu ngẫu nhiên (40/40 đúng). Không thể khẳng định là không còn nhãn sai nào. Bảng `labels_auto.csv` nên được coi là nhãn "bạc" có độ chính xác rất cao, không phải nhãn vàng.
+
+Phát hiện phụ cho M3 (làm sạch): title phía Semantic Scholar còn mã MathML (`<mml:math …>`), LaTeX (`\documentclass[12pt]{minimal}…`) và title giả (`OUP accepted manuscript`). `title_clean` chưa xử lý các trường hợp này, nên các cặp đó có độ giống title thấp dù khớp.
+
+**Độ giống title của R4** (`--sim`):
+- Mặc định `chars`: **Jaccard các 3-gram ký tự của title đã bỏ khoảng trắng**. Nhờ bỏ khoảng trắng, `M 2 diffuser` và `M2Diffuser` cho cùng một tập 3-gram; một từ bị đổi chỉ làm lệch vài 3-gram.
+- Bản đầu là `words`: tỉ lệ difflib trên các từ đã sắp xếp, ngưỡng 0,93. Cách này bỏ sót `M 2 diffuser` (0,89), vì khi sắp xếp, các mảnh "m" và "2" bị đẩy đi chỗ khác.
+
+So hai cách trên các cặp thật:
+
+| Cặp | words | chars |
+|---|---|---|
+| `M 2 diffuser` ↔ `M2Diffuser` (cùng bài) | 0,89 | 1,00 |
+| `Towards` ↔ `Toward Generalist…` (cùng bài) | 0,99 | 0,94 |
+| `Embodied SAM` ↔ `EmbodiedSAM` (cùng bài) | 0,93 | 1,00 |
+| `DDPM` ↔ `Improved DDPM` (khác bài) | 0,90 | 0,83 |
+| `Qwen3-TTS` ↔ `Qwen3-ASR` (khác bài) | 0,85 | 0,62 |
+| `V2V4Real` ↔ `V2X-Real` (khác bài) | 0,81 | 0,60 |
+
+`chars` tách hai nhóm (cùng bài / khác bài) rõ hơn. Ngoài ra, cặp nào lọt qua ngưỡng vẫn còn phải qua điều kiện cách biệt với ứng viên thứ hai, tác giả trùng và năm gần.
+
+Số nhãn R4 trên pool 2.500 bài theo ngưỡng (`words` 0,93 cho 601):
+
+| ngưỡng `chars` | 0,90 | **0,85** | 0,80 | 0,75 |
+|---|---|---|---|---|
+| nhãn R4 | 541 | **673** | 739 | 799 |
+
+Chọn 0,85. Xem bằng mắt 12 cặp mới (có ở 0,85, không có ở `words` 0,93) thì cả 12 đều đúng: `blue holonomic…` ↔ `holonomic…`, `deepfake` ↔ `deep fake`, `RingAttention` ↔ `Ring Attention`, `P 5` ↔ `P5`, title có năm dính ở cuối… Ở 0,75 bắt đầu xuất hiện các cặp chỉ khớp một phần title, ví dụ title thiếu tiền tố tên hệ thống (`Grid-Agent: …`) hoặc bản đổi tên.
+
+**Đo trên 168 nhãn tay của khoảng Bao (5 bài):** precision 1,000, recall 1,000 (168/168).
+- R1: 31, R2: 55, R3: 79, R4: 3; không có nhãn sai.
+- Với `words` 0,93 thì chỉ được 167/168 (bỏ sót `M 2 diffuser`).
+
+Lưu ý quan trọng: R3 (cho phép năm lệch khi tác giả trùng), cùng với độ đo và ngưỡng của R4, đều được chỉnh sau khi xem chính 168 nhãn này. Lúc đầu R3 đòi năm lệch ≤ 1 và bỏ sót 5 bản tạp chí đăng sau bản preprint 2–3 năm. Vì vậy con số trên **lạc quan**. Số đo khách quan là đo trên nhãn tay của 4 khoảng còn lại, những nhãn chưa dùng để chỉnh luật.
+
+Kiểm tra bằng mắt 15 cặp R4 ngẫu nhiên: cả 15 cặp đều đúng. Các dạng gặp: thừa chữ `blue` (lệnh màu LaTeX còn sót lại), `Embodied SAM` ↔ `EmbodiedSAM`, `^4He` ↔ `4 He`, title thiếu tiền tố `REALM:`.
