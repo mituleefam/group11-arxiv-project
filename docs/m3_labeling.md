@@ -272,8 +272,8 @@ python src/m3/merge_labels.py --work data/m3_all --suspects data/m3_all/suspect_
 # khi các thành viên còn đang gán: các mức tối thiểu chỉ in cảnh báo
 python src/m3/merge_labels.py --work data/m3_all --suspects data/m3_all/suspect_auto_labels.csv --allow-incomplete
 
-# chia tập (script của Member 1)
-python src/m3/split.py --labels data/m3_all/labels.csv --members 5 --seed 11 \
+# chia tập (script của Member 1); --per-range: mỗi thành viên góp 1 bài tay + 1 bài auto vào test và vào valid
+python src/m3/split.py --labels data/m3_all/labels.csv --seed 11 --per-range \
     --stats data/m3_all/split_rankable.csv --out data/m3_all/splits.json
 
 python src/m3/test_m3_merge_labels.py
@@ -296,7 +296,36 @@ python src/m3/test_m3_merge_labels.py
 
 `data/m3_all/suspect_auto_labels.csv` liệt kê 13 nhãn auto đã biết là sai hoặc đáng ngờ (xem "Kiểm tra cuối" ở bước 3). Các nhãn này vẫn nằm trong train, vì 0,02% nhiễu không đáng kể khi train. Nhưng bài chứa chúng không được rút vào test/valid, để MRR không bị chấm theo đáp án sai.
 
-**Hiện tại** (chỉ có nhãn tay của Bao, chạy với `--allow-incomplete`): 2.505 bài, 124.767 entry, **62.769 nhãn** (168 nhãn tay + 62.601 nhãn auto). 19 bài bị giữ ngoài test/valid. Chưa chia tập được, vì `split.py` cần 10 bài tay (5 cho test, 5 cho valid), mà hiện mới có 5.
+**Kết quả chính thức** (đủ nhãn tay của 5 thành viên, chế độ chuẩn, đạt mọi kiểm tra): 2.525 bài, 126.065 entry, **63.612 nhãn**.
+
+| Khoảng | Bài tay / nhãn tay | Bài auto / nhãn auto |
+|---|---|---|
+| Tram | 5 / 241 | 500 / 12.752 |
+| Thu | 5 / 179 | 500 / 12.758 |
+| Phat | 5 / 207 | 500 / 12.407 |
+| Bao | 5 / 168 | 500 / 12.344 |
+| Quan | 5 / 216 | 500 / 12.340 |
+| **Tổng** | **25 / 1.011** | **2.500 / 62.601** |
+
+Ngoài ra có 62.453 entry "không khớp" (598 ở bài tay, 61.855 ở bài auto): giữ lại cho bảng predictions, nhưng không phải sample. 19 bài bị giữ ngoài test/valid: bài không có nhãn nào, hoặc bài chứa nhãn auto nghi sai.
+
+**Kiểm tra nhãn tay của 4 thành viên** (ngoài các kiểm tra của `import`):
+- So với hint của luật: chỉ có 1 dòng không theo hint, và người gán đúng (`PhysRevC.90.057602`: S2 gắn nhầm DOI của bài 2014 cho bài 2021).
+- 11 cặp khớp không có hint: đọc lại, tất cả đều hợp lý.
+- 8 ca một reference được gán cho 2 entry: đều là cùng một bài được trích hai lần, có note giải thích.
+- Quét các nhãn có title trùng nhưng tác giả mâu thuẫn: tìm ra **1 nhãn sai** và đã sửa. `NielsenChuang` (sách Nielsen & Chuang, không có trên arXiv) bị gán vào `1210.0736`, một bài khác trùng tên của Ya-Zhen Wang (2012).
+
+**Đo khách quan luật auto** trên nhãn tay của 4 khoảng chưa từng dùng để chỉnh luật: precision **0,999**, recall **0,986** (832 đúng, 1 sai, 12 bỏ sót). Ca sai duy nhất là DOI mà S2 gắn nhầm. Các ca bỏ sót chủ yếu là title ≤ 2 từ (R3 đòi ≥ 3 từ), bài đổi tên, và tên phiên âm (Schütz/Schuetz). Chi tiết ở `auto_vs_manual_4ranges.csv`.
+
+**Chia tập** (`--per-range`, seed 11): mỗi khoảng góp đúng 1 bài tay + 1 bài auto vào test, và 1 + 1 vào valid.
+
+| Tập | Bài tay | Bài auto | Nhãn | Entry |
+|---|---|---|---|---|
+| train | 15 | 2.490 | 62.866 | 124.867 |
+| valid | 5 | 5 | 400 | 598 |
+| test | 5 | 5 | 346 | 600 |
+
+Ba tập không trùng bài nào; bài trong test/valid đều có ứng viên và không chứa nhãn auto nghi sai.
 
 ### Cách dùng nhãn cho đặc trưng, train và đánh giá (Member 3, 4)
 

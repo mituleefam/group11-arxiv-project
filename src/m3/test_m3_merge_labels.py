@@ -18,6 +18,7 @@ import pyarrow.parquet as pq
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import merge_labels as ml  # noqa: E402
+import split  # noqa: E402
 
 MANUAL = [f"2604.{6000 + i:05d}" for i in range(5)]  # Bao range
 AUTO = [f"2604.{7000 + i:05d}" for i in range(3)]
@@ -111,6 +112,29 @@ class MergeTests(unittest.TestCase):
         _, errors, _, _, _ = ml.merge(self.work, [self.work / "labels_manual_T.csv"], self.work / "labels_auto.csv",
                                       set(), False)
         self.assertTrue(any(f"{MANUAL[0]}: 15 labels" in e for e in errors))
+
+
+class SplitPerRangeTests(unittest.TestCase):
+    def test_one_of_each_kind_per_range(self):
+        sources = {}
+        for first in ("2511.21709", "2512.13231", "2601.13156", "2604.05535", "2605.12338"):  # one paper id per range
+            yymm, num = first.split(".")
+            for i in range(4):
+                sources[f"{yymm}.{int(num) + i:05d}"] = "manual"
+            for i in range(10, 30):
+                sources[f"{yymm}.{int(num) + i:05d}"] = "auto"
+        res = split.make_split_per_range(sources, 11)
+        sys.path.insert(0, str(HERE))
+        from select_manual import range_of
+        for part in ("test", "valid"):
+            self.assertEqual(sorted((range_of(p), sources[p]) for p in res[part]),
+                             sorted((r, k) for r in ("Tram", "Thu", "Phat", "Bao", "Quan") for k in ("manual", "auto")))
+        self.assertFalse(set(res["test"]) & set(res["valid"]) or set(res["test"]) & set(res["train"]))
+        self.assertEqual(len(res["train"]) + 20, len(sources))
+        self.assertEqual(res, split.make_split_per_range(sources, 11))  # same seed, same split
+        not_rankable = {p for p in sources if range_of(p) == "Bao" and sources[p] == "manual"}
+        with self.assertRaises(ValueError):
+            split.make_split_per_range(sources, 11, set(sources) - not_rankable)
 
 
 if __name__ == "__main__":

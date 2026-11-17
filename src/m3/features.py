@@ -255,9 +255,9 @@ def main(argv=None) -> int:
     p.add_argument("--out", type=Path, help="default WORK/features.parquet")
     args = p.parse_args(argv)
     labels = args.labels or args.work / "labels.csv"
-    if not labels.exists():
-        print(f"no {labels}: run merge_labels.py first", file=sys.stderr)
-        return 1
+    if not labels.exists():  # pipeline_m3 runs every step present: no labels yet = nothing to do
+        print(f"skipped: no {labels} (run merge_labels.py first)")
+        return 0
     build(args.work, labels, args.out or args.work / "features.parquet")
     return 0
 
