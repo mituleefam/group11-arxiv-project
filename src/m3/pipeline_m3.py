@@ -9,9 +9,9 @@ Steps, in order:
   candidates  candidates.py   candidates.parquet, paper_stats.csv             (Member 1)
   split       split.py        splits.json, needs --labels                     (Member 1)
   features    features.py     features.parquet                                (Member 3)
-  model       model.py        trained model                                   (Member 4)
-  predict     predict.py      predictions                                     (Member 4)
-  evaluate    evaluate.py     MRR@5                                           (Member 4)
+  model       modeling/train.py     models chosen by cross-validation          (Member 4)
+  predict     modeling/predict.py   predictions.parquet                        (Member 4)
+  evaluate    modeling/evaluate.py  MRR@5 on valid                             (Member 4)
 
 Convention for the later steps: each script is run as
     python src/m3/<script> --work WORK_DIR
@@ -31,7 +31,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 STEPS = ["data", "candidates", "split", "features", "model", "predict", "evaluate"]
 SCRIPTS = {"data": "m3_data.py", "candidates": "candidates.py", "split": "split.py", "features": "features.py",
-           "model": "model.py", "predict": "predict.py", "evaluate": "evaluate.py"}
+           "model": "modeling/train.py", "predict": "modeling/predict.py", "evaluate": "modeling/evaluate.py"}
 
 
 def command(step: str, args) -> list[str] | None:
