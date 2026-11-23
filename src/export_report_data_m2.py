@@ -2,7 +2,7 @@
 
 The book is built by GitHub Actions, which cannot read the group's results on Google Drive, and the
 parsed text must not be published before Milestone 3. This tool reads the results that
-benchmark_colab_m2.ipynb saved and writes a few aggregated tables (counts, sizes, statuses, timings;
+notebooks/m2_benchmark_colab.ipynb saved and writes a few aggregated tables (counts, sizes, statuses, timings;
 no LaTeX text, no reference titles) into the book repository. It sends no request and changes
 nothing in the results.
 

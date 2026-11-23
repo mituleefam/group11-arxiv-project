@@ -30,7 +30,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import FEATURE_GROUPS, Pairs, mrr_at_5  # noqa: E402
+from pairs import FEATURE_GROUPS, Pairs, mrr_at_5  # noqa: E402
 from models import score  # noqa: E402
 from train import cv_scores, fit, hard_groups, make_folds, oof_metrics  # noqa: E402
 

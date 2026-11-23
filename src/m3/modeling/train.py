@@ -11,7 +11,7 @@ scores). The test set is never read here; valid is only reported.
 
 Configurations (each with every link-mask share of --mask-shares: the share of
 the training entries whose link features are set to "no arXiv id, no DOI",
-common.NO_LINK, so that the model also learns from title, authors, year):
+pairs.NO_LINK, so that the model also learns from title, authors, year):
   logreg_m<share>   logistic regression on the pairs (pairwise classification)
   lgbm_m<share>     LightGBM lambdarank, one group per entry (learning to rank),
                     300 trees, learning rate 0.05 (no early stopping: it would
@@ -42,7 +42,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import FEATURE_SETS, Pairs, link_mask_for_groups, mrr_at_5  # noqa: E402
+from pairs import FEATURE_SETS, Pairs, link_mask_for_groups, mrr_at_5  # noqa: E402
 from models import BASELINES, LGBM_PARAMS, baseline_scores, fit_lgbm, fit_logreg, save, score  # noqa: E402
 
 def evaluate_scorer(pairs: Pairs, part: str, scorer) -> dict:
@@ -112,7 +112,7 @@ def main(argv=None) -> int:
     p.add_argument("--folds", type=int, default=5)
     p.add_argument("--mask-shares", type=float, nargs="+", default=[0.0, 0.5])
     p.add_argument("--feature-set", choices=sorted(FEATURE_SETS), default="compact",
-                   help="common.FEATURE_SETS: full (26 features) or compact (17, chosen by ablation.py)")
+                   help="pairs.FEATURE_SETS: full (26 features) or compact (17, chosen by ablation.py)")
     p.add_argument("--report", type=Path, help="default WORK/train_report.json")
     args = p.parse_args(argv)
     for f in ("features.parquet", "splits.json"):

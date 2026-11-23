@@ -1,7 +1,7 @@
 """Offline tests of the Milestone 2 Member 2 modules: cleaner, normalizer,
 sentence_splitter and leaf_extractor, alone and inside hierarchy.build.
 
-    python src/test_m2_member2.py
+    python src/tests/m2/test_clean_split.py
 
 No network, no data folder.
 """
@@ -12,7 +12,7 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # src/
 import m2_contract  # noqa: E402
 from cleaner import clean  # noqa: E402
 from hierarchy import build  # noqa: E402

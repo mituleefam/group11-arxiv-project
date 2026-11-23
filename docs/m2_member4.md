@@ -10,8 +10,8 @@ Phần này phụ trách **ID của các phần tử LaTeX sau chuẩn hóa**, k
 | `validate_m2.py` | Kiểm tra JSON từng bài, cấu trúc cây, citation key và schema 3 bảng Parquet. |
 | `statistics_m2.py` | Tổng hợp parsing coverage, số phần tử/trích dẫn trước–sau dedup và phân loại lỗi. |
 | `benchmark_m2.py` | Gọi `benchmark.py` có sẵn của M1 để đo toàn pipeline M2; thêm log tổng hợp riêng. |
-| `test_m2_member4.py` | Test Registry, validation, statistics và tích hợp bằng dữ liệu giả lập. |
-| `benchmark_colab_m2.ipynb` | Chạy kiểm thử và benchmark trên Colab CPU-only với corpus M1 của nhóm. |
+| `tests/m2/test_validate_stats.py` | Test Registry, validation, statistics và tích hợp bằng dữ liệu giả lập. |
+| `notebooks/m2_benchmark_colab.ipynb` | Chạy kiểm thử và benchmark trên Colab CPU-only với corpus M1 của nhóm. |
 
 ## Điểm tích hợp với pipeline
 
@@ -28,7 +28,7 @@ Thứ tự chạy đầy đủ của Milestone 2, gồm cả bước tải bù `
 Chạy tại **thư mục gốc repository**, với `data/` là corpus Milestone 1 đã có sẵn (không nằm trong source repo):
 
 ```bash
-python -m unittest discover -s src -p test_m2_member4.py -v
+python -m unittest discover -s src/tests/m2 -p test_validate_stats.py -v
 python src/pipeline_m2.py --data-dir data --limit 5 --workers 2 --force
 python src/validate_m2.py --data-dir data --limit 5 --require-parquet
 python src/benchmark_m2.py --data-dir data --limit 5 --workers 2 --force
@@ -50,6 +50,6 @@ python src/statistics_m2.py --data-dir data --limit 5
 2. **Validation:** Kiểm tra đúng root, chu trình, orphan node, schema Arrow/Parquet, các phiên bản không có TeX và citation key chưa khớp. Citation thiếu được ghi `WARN`, không mặc định là lỗi parser.
 3. **Statistics:** “Trước dedup” của elements là **số lần xuất hiện** (số cạnh + root), “sau” là **số element phân biệt**; tỷ lệ giảm số bản ghi **không phải** tỷ lệ giảm dung lượng file. BibTeX before-dedup chỉ có khi `reference_log.csv` từ Member 3 đầy đủ.
 4. **Benchmark:** `benchmark_m2.py` tái sử dụng `benchmark.py` M1, không chỉnh file M1. RAM peak là **giá trị lớn nhất trong các mẫu đo**, không phải đỉnh tuyệt đối; số đo có thể tính trùng trang nhớ dùng chung giữa các process.
-5. **Tính tương thích:** Bộ sửa M2 tổng thể có thay đổi `gatherer.py`, `pipeline_m2.py`, các module chuẩn hóa và BibTeX của các thành viên khác. Các thay đổi có test hồi quy trong `src/test_m2_full_fixes.py`; M1 `corpus_statistics.py` không thay đổi. Sau khi merge, chạy lại integration test, validation và benchmark toàn corpus.
+5. **Tính tương thích:** Bộ sửa M2 tổng thể có thay đổi `gatherer.py`, `pipeline_m2.py`, các module chuẩn hóa và BibTeX của các thành viên khác. Các thay đổi có test hồi quy trong `src/tests/m2/test_full_fixes.py`; M1 `corpus_statistics.py` không thay đổi. Sau khi merge, chạy lại integration test, validation và benchmark toàn corpus.
 
 Các file CSV/log và Parquet thuộc dữ liệu chạy, **không commit toàn bộ corpus lên GitHub**. Member 5 chỉ cần lấy bảng thống kê/log đã chọn để dựng biểu đồ Jupyter Book.

@@ -1,7 +1,7 @@
 """Offline tests of the Milestone 2 Member 1 modules: latex_scan, gatherer,
 hierarchy and pipeline_m2 (with the m2_contract stand-ins).
 
-    python src/test_m2_member1.py
+    python src/tests/m2/test_gather_hierarchy.py
 
 No network. The pipeline test writes Parquet tables when pyarrow is
 installed, and checks the parsed/ files only otherwise.
@@ -17,7 +17,7 @@ import unittest
 from collections import defaultdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # src/
 from gatherer import NO_SOURCE, NO_TEX, OK, gather  # noqa: E402
 from hierarchy import build, split_paragraphs  # noqa: E402
 from latex_scan import find_env_end, read_group, read_optional, strip_comments  # noqa: E402

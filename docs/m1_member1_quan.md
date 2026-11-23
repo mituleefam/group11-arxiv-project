@@ -49,7 +49,7 @@ trên các file đó ở những commit ghi trong bảng.
 | "The reference metadata must additionally be crawled for each publication via the Semantic Scholar API" | `references.py` (Member 3), Quân thêm `/paper/batch` |
 | "Keep one working folder per publication, for example folder 2310-12345" | `common.DataLayout`: `corpus/<yymm-id>/` |
 | "running time and memory footprint ... the maximum disk storage required" | `benchmark.py` (Member 4), `group_benchmark.py` (Quân) |
-| "The testbed for the final benchmarking is a Google Colab instance running on CPU-only mode." | Notebook `src/chay-crawler-nhom-final.ipynb` |
+| "The testbed for the final benchmarking is a Google Colab instance running on CPU-only mode." | Notebook `src/notebooks/m1_crawl_group_colab.ipynb` |
 
 ---
 
@@ -211,9 +211,9 @@ tải dở bị xoá trên Drive rơi vào Thùng rác làm đầy Drive.
 
 ### 3.10. Notebook Colab
 
-- `src/chay-crawler-nhom-final.ipynb`: chạy chính thức cho cả nhóm, điền khoảng ID rồi
+- `src/notebooks/m1_crawl_group_colab.ipynb`: chạy chính thức cho cả nhóm, điền khoảng ID rồi
   chạy; key Semantic Scholar để trong *Secrets* của Colab, không ghi trong code.
-- `src/chay-thu-crawler-nhom.ipynb`: chạy thử khoảng 100 ID trước khi chạy thật.
+- `src/notebooks/m1_crawl_trial_colab.ipynb`: chạy thử khoảng 100 ID trước khi chạy thật.
 - Proxy, WARP và AWS là **tuỳ chọn**, xem mục 3.11.
 
 ### 3.11. Đổi đường đi (IP): proxy Webshare, WARP, AWS API Gateway
@@ -477,5 +477,5 @@ python src/main.py --range 2026-05 12338 2026-05 17337 --data-dir data --limit 1
 python src/validate.py --data-dir data
 ```
 
-Trên Colab: mở `src/chay-thu-crawler-nhom.ipynb`, điền tên, khoảng ID và `TU`, `DEN`
+Trên Colab: mở `src/notebooks/m1_crawl_trial_colab.ipynb`, điền tên, khoảng ID và `TU`, `DEN`
 (khoảng 100 ID), rồi chạy từ trên xuống.

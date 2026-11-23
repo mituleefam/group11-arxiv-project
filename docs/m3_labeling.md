@@ -37,7 +37,7 @@ python src/m3/label_sheet.py export --work data/m3_work --picks data/m3_work/man
 # 2b. kiểm tra và ghi nhãn -> WORK/labels_manual_<tên>.csv
 python src/m3/label_sheet.py import --work data/m3_work --sheet data/m3_work/label_sheet_Bao.xlsx --labeler Bao
 
-python src/m3/test_m3_labeling.py
+python src/tests/m3/test_manual_labeling.py
 ```
 
 Khi chạy cho cả nhóm, truyền mọi thư mục M1 vào `--data-dir`. Mỗi người dùng `export --range <tên khoảng>` để lấy riêng bài của khoảng mình.
@@ -141,7 +141,7 @@ python src/m3/auto_label.py --work data/m3_all
 # đo chất lượng luật trên nhãn tay (chỉ để đo, không ghi nhãn)
 python src/m3/auto_label.py --work data/m3_all --evaluate data/m3_all/labels_manual_*.csv --errors data/m3_all/auto_vs_manual.csv
 
-python src/m3/test_m3_auto_label.py
+python src/tests/m3/test_auto_label.py
 ```
 
 **Chọn bài (pool auto).** Theo thầy, 10% tính theo **số bài** ngoài phần gán tay, cho mỗi thành viên: ceil(0,10 × (5000 − 5)) = **500 bài mỗi khoảng**, cả nhóm 2.500 bài.
@@ -276,7 +276,7 @@ python src/m3/merge_labels.py --work data/m3_all --suspects data/m3_all/suspect_
 python src/m3/split.py --labels data/m3_all/labels.csv --seed 11 --per-range \
     --stats data/m3_all/split_rankable.csv --out data/m3_all/splits.json
 
-python src/m3/test_m3_merge_labels.py
+python src/tests/m3/test_merge_labels.py
 ```
 
 **File ra**

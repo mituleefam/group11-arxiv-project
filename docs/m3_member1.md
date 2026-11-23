@@ -26,7 +26,7 @@ python src/m3/m3_data.py --tables M2_TABLES --data-dir M1_DATA_DIR --out WORK
 python src/m3/candidates.py --work WORK
 python src/m3/split.py --labels WORK/labels.csv --members 5 --seed 11 --stats WORK/paper_stats.csv --out WORK/splits.json
 python src/m3/snapshot_diff.py --old WORK_CU --new WORK_MOI --out diff.csv --labels WORK/labels.csv
-python src/m3/test_m3_member1.py
+python src/tests/m3/test_data_candidates_split.py
 ```
 
 Thử trên khoảng của Bảo (5000 bài) trên máy thường: nạp + làm sạch khoảng 45 s, sinh cặp 6 s.

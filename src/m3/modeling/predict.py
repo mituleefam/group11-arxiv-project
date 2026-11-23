@@ -34,7 +34,7 @@ import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from common import Pairs  # noqa: E402
+from pairs import Pairs  # noqa: E402
 from models import load, score  # noqa: E402
 from select_manual import range_of  # noqa: E402
 

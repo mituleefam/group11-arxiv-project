@@ -24,6 +24,8 @@ src/
 ├── snapshot.py      incremental .tar.gz backups of a data folder, and their restore
 ├── assigned_ids.py  every ID of an assigned range, for validate.py --assigned-ids
 ├── common.py        data layout, status codes, manifest, CSV logs
+├── notebooks/       Colab notebooks: the M1 crawl (trial and group run) and the M2 run
+├── tests/           offline tests, one folder per milestone: m1/, m2/, m3/
 └── requirements.txt
 environment.yml      conda environment (installs src/requirements.txt)
 book/                source of the Jupyter Book report (see section 9)
@@ -120,7 +122,7 @@ finished, so after `[download] finished` it may still be waiting for the
 references stage.
 
 **The group's ranges on Colab (benchmark).** The Colab notebook
-`src/chay-crawler-nhom-final.ipynb` (the official run; `src/chay-thu-crawler-nhom.ipynb`
+`src/notebooks/m1_crawl_group_colab.ipynb` (the official run; `src/notebooks/m1_crawl_trial_colab.ipynb`
 runs the same steps on a short trial range, in a separate Drive folder) runs
 `python src/chunked_crawl.py plan.json`: the ranges are crawled one after the
 other, on the runtime's own disk (Google Drive is too slow for the crawler's
@@ -298,7 +300,7 @@ Role 4 **audits and measures** the Milestone 1 crawler. These scripts do not mod
 | `src/benchmark.py`           | Launch and monitor a command; sample process-tree RAM, remote data-directory size, local disk use, end-to-end invocation wall time and progress/heartbeat.                            | Yes: `performance_*` logs.                                                               | Only if the child command uses an API                 |
 | `src/benchmark_runs.py`      | Summarize multiple benchmark invocations and detect heartbeat files with no finished summary. Distinguish new runs from resumed/incomplete runs.                                      | Yes: `benchmark_runs_overview.csv` and `.json`.                                          | No                                                    |
 | `src/per_paper_benchmark.py` | Run an independent **fresh full-pipeline** experiment for each selected paper and report its observed elapsed wall time.                                                              | Yes: dedicated corpus folders, `paper_timings.csv` and `per_paper_summary.json`.         | **Yes**, when actually running arXiv/Semantic Scholar |
-| `src/test_role4.py`          | Offline regression tests for the tools and input/output validation contracts.                                                                                                         | Temporary test directories only.                                                         | No                                                    |
+| `src/tests/m1/test_crawl_validation.py`          | Offline regression tests for the tools and input/output validation contracts.                                                                                                         | Temporary test directories only.                                                         | No                                                    |
 
 **Other owners:** `main.py`, Discovery, Metadata, Download/Extraction/Checkpoint and Semantic Scholar crawling remain owned by their respective members. A Validation warning does not automatically mean Role 4 caused the error.
 
@@ -318,7 +320,7 @@ source .venv/bin/activate
 
 python -m pip install -r src/requirements.txt
 python -m pip check
-python -m unittest discover -s src -p 'test_role4.py' -v
+python -m unittest discover -s src/tests/m1 -p 'test_crawl_validation.py' -v
 ```
 
 On Windows PowerShell, replace the `source ...` line with `.\.venv\Scripts\Activate.ps1`. `psutil` is required by the benchmark tools; keep it in `src/requirements.txt`. If `pip check` reports a Colab dependency conflict, resolve the pinned versions with the group and rerun tests. Do not ignore dependency warnings during the official performance measurement.
@@ -535,10 +537,10 @@ src/
 ├── validate_m2.py        checks the JSON files, the trees and the Parquet schemas
 ├── benchmark_m2.py       measures a whole run (wall time, peak RAM, output size)
 ├── group_benchmark_m2.py aggregates 5 M2 member ranges; invoked by group_benchmark.py --m2
-├── test_m2_full_fixes.py regression tests for M2 bug-fix cases
+├── tests/m2/test_full_fixes.py  regression tests for M2 bug-fix cases
 ├── statistics_m2.py      the numbers of the report
 ├── export_report_data_m2.py  the small tables of the Jupyter Book's Milestone 2 part
-└── benchmark_colab_m2.ipynb   all the steps below on Google Colab, CPU-only
+└── notebooks/m2_benchmark_colab.ipynb   all the steps below on Google Colab, CPU-only
 ```
 
 ### 8.1. Environment
@@ -554,12 +556,12 @@ Run these in order, once for each `DATA_DIR`:
 
 ```bash
 # 1. Check the code (offline, a few seconds)
-python src/test_m2_bbl.py
-python src/test_m2_member1.py
-python src/test_m2_member2.py
-python src/reference_parser/test_m2_member3.py
-python src/test_m2_member4.py
-python src/test_m2_full_fixes.py
+python src/tests/m2/test_bbl.py
+python src/tests/m2/test_gather_hierarchy.py
+python src/tests/m2/test_clean_split.py
+python src/tests/m2/test_references.py
+python src/tests/m2/test_validate_stats.py
+python src/tests/m2/test_full_fixes.py
 
 # 2. Add the missing .bbl files. Only for a corpus crawled before .bbl files were kept.
 #    Run it before step 3, so the parse reads them. The first command sends no request.
@@ -585,7 +587,7 @@ python src/statistics_m2.py --data-dir DATA_DIR --counterfactual-parquet
 To parse without measuring anything, step 4 becomes `python src/pipeline_m2.py --data-dir DATA_DIR`.
 
 `fetch_bbl.py` is not part of the benchmark: it downloads, while the benchmark measures the parser.
-`src/benchmark_colab_m2.ipynb` runs all these steps on Colab for one data folder. It saves the `.bbl`
+`src/notebooks/m2_benchmark_colab.ipynb` runs all these steps on Colab for one data folder. It saves the `.bbl`
 files to Drive as it goes, so a new runtime does not download them again.
 
 ### 8.3. The group's five ranges

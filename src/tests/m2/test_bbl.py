@@ -1,7 +1,7 @@
 """Offline tests: references kept in a .bbl file, from the archive to the bibtex
 table, and the \\label and \\\\ left out of sentences.
 
-    python src/test_m2_bbl.py
+    python src/tests/m2/test_bbl.py
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # src/
 
 import fetch_bbl
 import pipeline_m2

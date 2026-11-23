@@ -2,7 +2,7 @@
 bibtex_converter, dedup_bibtex, citation_updater, and their place in
 pipeline_m2 and reference_stats.
 
-    python src/reference_parser/test_m2_member3.py
+    python src/tests/m2/test_references.py
 
 No network, no pyarrow needed.
 """
@@ -17,7 +17,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # src/
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # src/
 try:
     import m2_contract  # noqa: E402  (Member 1, branch quan-m2-member1)
     BIBTEX_FIELDS = m2_contract.BIBTEX_FIELDS

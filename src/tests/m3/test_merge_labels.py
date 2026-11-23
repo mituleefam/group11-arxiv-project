@@ -1,6 +1,6 @@
 """Tests of merge_labels.py; no network, a few seconds.
 
-    python src/m3/test_m3_merge_labels.py
+    python src/tests/m3/test_merge_labels.py
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parents[2] / "m3"  # src/m3/
 sys.path.insert(0, str(HERE))
 import merge_labels as ml  # noqa: E402
 import split  # noqa: E402

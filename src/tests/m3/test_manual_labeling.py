@@ -1,6 +1,6 @@
 """Tests of the labelling steps 1 and 2 (select_manual.py, label_sheet.py); no network, a few seconds.
 
-    python src/m3/test_m3_labeling.py
+    python src/tests/m3/test_manual_labeling.py
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parents[2] / "m3"  # src/m3/
 sys.path.insert(0, str(HERE))
 import label_sheet  # noqa: E402
 import select_manual  # noqa: E402

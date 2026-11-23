@@ -9,14 +9,14 @@ python src/m3/modeling/evaluate.py --work data/m3_all                 # MRR@5 tr
 python src/m3/modeling/evaluate.py --work data/m3_all --part test     # test: chỉ chạy MỘT LẦN, ở cuối
 python src/m3/modeling/predict.py  --work data/m3_all                 # bảng predictions
 python src/m3/modeling/errors.py   --work data/m3_all                 # phân tích lỗi
-python src/m3/modeling/test_modeling.py
+python src/tests/m3/test_modeling.py
 ```
 
 `pipeline_m3.py` gọi lần lượt `modeling/train.py`, `predict.py`, `evaluate.py`. Cần cài `numpy`, `scikit-learn`, `lightgbm` (và `pandas`, `matplotlib` để chạy notebook), đã có trong `src/requirements.txt`. Không gọi API ngoài, không dùng model pretrained.
 
 | File | Việc |
 |---|---|
-| `common.py` | đọc `features.parquet` + `splits.json`; bộ đặc trưng (`DROPPED`, `COMPACT`); che link; MRR@5, Hit@1, Hit@5 |
+| `pairs.py` | đọc `features.parquet` + `splits.json`; bộ đặc trưng (`DROPPED`, `COMPACT`); che link; MRR@5, Hit@1, Hit@5 |
 | `models.py` | 2 baseline, Logistic Regression, LightGBM; lưu/nạp model |
 | `train.py` | cross-validation 5 fold theo bài trên train; chọn model; train model cuối trên toàn train |
 | `ablation.py` | ablation theo nhóm và permutation importance (CV) |

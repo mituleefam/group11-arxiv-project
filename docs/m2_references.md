@@ -11,6 +11,7 @@ Toàn bộ code của Member 3 nằm trong thư mục con `src/reference_parser/
 ```
 src/
 ├── m2_contract.py, pipeline_m2.py, ...     (Member 1)
+├── tests/m2/test_references.py             (Member 3, offline tests)
 └── reference_parser/                       (Member 3)
     ├── __init__.py
     ├── ref_text.py
@@ -18,8 +19,7 @@ src/
     ├── bibtex_converter.py
     ├── dedup_bibtex.py
     ├── citation_updater.py
-    ├── reference_stats.py
-    └── test_m2_member3.py
+    └── reference_stats.py
 ```
 
 | File                    | Vai trò                                                                                                                                                                             | Hàm pipeline gọi         |
@@ -30,7 +30,7 @@ src/
 | `dedup_bibtex.py`     | Gộp tham khảo trùng xuyên các version, union field, chọn canonical key, sinh map đổi tên                                                                                    | `dedup(by_version)`      |
 | `citation_updater.py` | Đổi key trong mọi lệnh `\cite`-like theo map                                                                                                                                   | `update(text, rename)`   |
 | `reference_stats.py`  | Chạy riêng phần tham khảo trên corpus, ghi log và số liệu cho báo cáo                                                                                                      | CLI                        |
-| `test_m2_member3.py`  | 22 test offline (gồm 1 test chạy cả `pipeline_m2`)                                                                                                                              | –                         |
+| `tests/m2/test_references.py` | 22 test offline (gồm 1 test chạy cả `pipeline_m2`)                                                                                                                              | –                         |
 
 Các module chỉ dùng thư viện chuẩn của Python (không cần cài thêm gói nào).
 Chúng theo đúng contract trong `src/m2_contract.py` (branch `quan-m2-member1`).
@@ -194,8 +194,8 @@ phần thống kê "entry counts before and after deduplication".
 ## 8. Kiểm thử
 
 ```bash
-python src/reference_parser/test_m2_member3.py      # 22 test, offline, không cần pyarrow
-python src/test_m2_member1.py      # test của Member 1 vẫn chạy được khi có module Member 3
+python src/tests/m2/test_references.py      # 22 test, offline, không cần pyarrow
+python src/tests/m2/test_gather_hierarchy.py      # test của Member 1 vẫn chạy được khi có module Member 3
 ```
 
 Có test cho: LaTeX → text, DOI/arXiv, `.bib` (@string, #, crossref, comment,
@@ -230,4 +230,4 @@ Chạy lại được: version đã có `.bbl` không bị chọn nữa, version
 - `bbl_converter.py` nhận thêm amsrefs (`\bib{key}{type}{...}`) và harvard (`\harvarditem`). Dạng không nhận diện phải được ghi nhận để kiểm tra thủ công, không tự tạo citation key.
 - `dedup_bibtex.py` không dùng tiêu đề không đặc trưng như `(ATLAS Collaboration)`, `accessed...` hoặc chuỗi số làm căn cứ hợp nhất. Tiêu đề có phiên bản mô hình khác nhau (`GPT-5.4` / `GPT-4 Turbo` / `GPT-3.5`) không được gộp chỉ vì khóa giống nhau. Trường hợp cùng citation key bị dùng cho hai tài liệu khác nhau vẫn cần review thủ công, vì không thể suy ra đổi tên `\cite` toàn cục một cách đáng tin cậy.
 - `bibtex_converter.py` mở rộng một số macro tên tạp chí thiên văn trong trường `journal` và nhận diện năm từ 1600 đến năm hiện hành+1, tránh nhận nhầm đầu mã arXiv thành năm.
-- Xem `src/test_m2_full_fixes.py` để tái lập regression tests.
+- Xem `src/tests/m2/test_full_fixes.py` để tái lập regression tests.

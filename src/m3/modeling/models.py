@@ -13,7 +13,7 @@ entry are ranked by score and the top 5 are the prediction.
             optimising NDCG (close to MRR@5); LGBM_PARAMS
 
 A learned model can be trained with the link features of a share of the
-training entries masked (common.NO_LINK), so that it also learns to match
+training entries masked (pairs.NO_LINK), so that it also learns to match
 entries that name no identifier.
 """
 
@@ -25,7 +25,7 @@ from pathlib import Path
 
 import numpy as np
 
-from common import NO_LINK, Pairs
+from pairs import NO_LINK, Pairs
 
 BASELINES = ("rules", "title")
 

@@ -1,6 +1,6 @@
 """Tests of src/m3/modeling (MRR@5, masking, train / evaluate / predict end to end on a small fake set).
 
-    python src/m3/modeling/test_modeling.py
+    python src/tests/m3/test_modeling.py
 """
 
 from __future__ import annotations
@@ -17,9 +17,9 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parents[2] / "m3" / "modeling"  # src/m3/modeling/
 sys.path.insert(0, str(HERE))
-import common  # noqa: E402
+import pairs as common  # noqa: E402  (src/m3/modeling/pairs.py)
 import evaluate  # noqa: E402
 import predict  # noqa: E402
 import train  # noqa: E402

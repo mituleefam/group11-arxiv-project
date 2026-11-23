@@ -1,6 +1,6 @@
 """Tests of Milestone 3, Member 1 (no network, a few seconds).
 
-    python src/m3/test_m3_member1.py
+    python src/tests/m3/test_data_candidates_split.py
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parents[2] / "m3"  # src/m3/
 sys.path.insert(0, str(HERE))
 import candidates  # noqa: E402
 import m3_data  # noqa: E402

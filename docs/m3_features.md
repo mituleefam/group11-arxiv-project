@@ -5,7 +5,7 @@
 ```bash
 python src/m3/features.py --work data/m3_all                       # -> features.parquet, features.json
 python src/m3/feature_report.py --work data/m3_all --part train    # -> feature_report_train.csv
-python src/m3/test_m3_features.py
+python src/tests/m3/test_features.py
 ```
 
 ## 1. Cách đặt bài toán: learning to rank
@@ -98,7 +98,7 @@ Permutation importance (khi che link, trên ca khó) xếp đầu: `year_gap`, `
 
    CV cho thấy compact bằng full: ca khó khi không link 0,9849 so với 0,9851, chênh chưa tới 1 entry trên 3.119. Ít hơn 9 đặc trưng, dễ giải thích hơn, nên chọn compact.
 
-Danh sách nằm trong `src/m3/modeling/common.py` (`DROPPED`, `COMPACT`). `features.parquet` vẫn giữ đủ 31 cột.
+Danh sách nằm trong `src/m3/modeling/pairs.py` (`DROPPED`, `COMPACT`). `features.parquet` vẫn giữ đủ 31 cột.
 
 ## 5. Tóm tắt
 

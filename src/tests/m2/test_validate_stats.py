@@ -1,7 +1,7 @@
 """Member 4 regression tests: exact ID contract, graphs, validation and stats.
 
 Run from repo root:
-    python -m unittest discover -s src -p test_m2_member4.py -v
+    python -m unittest discover -s src/tests/m2 -p test_validate_stats.py -v
 No actual corpus or network is required. Parquet tests are conditional on
 pyarrow being installed and are additionally exercised on Colab.
 """
@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # src/
 
 from dedup_elements import Registry
 from benchmark_m2 import inspect_completion
@@ -170,7 +170,7 @@ class ValidationTests(unittest.TestCase):
             "v1": {"status": "success"},
             "v2": {"status": "success"},
             "v3": {"status": "pdf_only"}}}), encoding="utf-8")
-        project = Path(__file__).resolve().parent
+        project = Path(__file__).resolve().parents[2]  # src/
         proc = subprocess.run([sys.executable, str(project / "pipeline_m2.py"),
                                "--data-dir", str(self.root), "--workers", "1",
                                "--force", "--no-export"], capture_output=True, text=True,

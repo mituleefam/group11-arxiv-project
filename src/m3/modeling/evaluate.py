@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import Pairs  # noqa: E402
+from pairs import Pairs  # noqa: E402
 from models import BASELINES, baseline_scores, load, score  # noqa: E402
 from train import evaluate_scorer  # noqa: E402
 

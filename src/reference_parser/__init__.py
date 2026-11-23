@@ -7,7 +7,6 @@
     dedup_bibtex.py      dedup(by_version): one row per reference, key renames
     citation_updater.py  update(text, rename): \\cite keys renamed
     reference_stats.py   CLI: the reference steps alone, with logs
-    test_m2_member3.py   offline tests
 
 pipeline_m2.py reaches these modules through m2_contract.load(), which looks
 for each module at the top of src/ and then in this package.
