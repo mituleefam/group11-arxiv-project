@@ -1,7 +1,13 @@
-# arXiv Crawler — Milestone 1 (Group 11)
+# arXiv Project (Group 11)
+
+Milestone 1 is the crawler described from here to section 7. Milestone 2, which
+parses the crawled corpus into tables, is in [section 8](#8-milestone-2-parsing-and-standardization).
+
+## Milestone 1: the crawler
+
 
 Crawls the arXiv papers of an assigned ID range: every version's LaTeX source
-(`.tex` / `.bib` only, figures removed), the paper metadata, and the reference
+(`.tex`, `.bib` and `.bbl` only, figures removed), the paper metadata, and the reference
 metadata from Semantic Scholar.
 
 ```
@@ -20,11 +26,11 @@ src/
 ├── common.py        data layout, status codes, manifest, CSV logs
 └── requirements.txt
 environment.yml      conda environment (installs src/requirements.txt)
-book/                source of the Jupyter Book report (see section 8)
+book/                source of the Jupyter Book report (see section 9)
 ```
 
 **Report (Jupyter Book):** <https://mituleefam.github.io/group11-arxiv-project-jupyter-book/>.
-Its source is in [`book/`](book/), and section 8 explains how to build it.
+Its source is in [`book/`](book/), and [section 9](#9-report-jupyter-book) explains how to build it.
 
 ## 1. Setting up the environment
 
@@ -166,7 +172,7 @@ which the other stages read).
 ├── corpus/<yymm-id>/            e.g. corpus/2604-05535/
 │   ├── metadata.json            title, authors, submission/revised dates, venue, per-version metadata
 │   ├── versions.json            download state of every version
-│   ├── v1/, v2/, ...            .tex/.bib files with the archive's own sub-folders
+│   ├── v1/, v2/, ...            .tex/.bib/.bbl files with the archive's own sub-folders
 │   ├── references_all.json      every reference returned by Semantic Scholar
 │   └── references.json          references with an arXiv ID
 └── logs/                        CSV logs, see below
@@ -214,7 +220,7 @@ lost if a run stops). Times are UTC ISO 8601, durations in seconds, sizes in byt
 | `downloaded_bytes`                                     | Size of the file received from arXiv (compressed).                                                                  |
 | `original_bytes`                                       | Total **uncompressed** size of every file in the source.                                                            |
 | `image_bytes`                                          | Part of `original_bytes` that are figure files.                                                                     |
-| `kept_bytes`                                           | Total size of the kept `.tex`/`.bib` files (uncompressed, same basis as `original_bytes`).                          |
+| `kept_bytes`                                           | Total size of the kept `.tex`/`.bib`/`.bbl` files (uncompressed, same basis as `original_bytes`).                          |
 | `kept_files`, `tex_files`, `bib_files`                 | Number of kept files, of which `.tex` and `.bib`.                                                                   |
 | `skipped_files`                                        | `.tex`/`.bib` members not written (unsafe path, link, name refused by the file system); details in `versions.json`. |
 | `error`                                                | Empty on success. HTTP errors name the route of the answer, e.g. `HTTP 500 via WARP`.                               |
@@ -500,9 +506,199 @@ python src/export_report_data.py \
 It writes small aggregated tables (counts, sizes, statuses, timings, RAM/disk samples; no LaTeX text and no
 reference titles) that the book's notebooks read at build time. It sends no request and changes nothing in the
 data folders. Commit the resulting `data/m1/` folder to the book repository, and copy it to `book/data/m1/`
-here as well (see section 8).
+here as well (see section 9).
 
-## 8. Report (Jupyter Book)
+## 8. Milestone 2: parsing and standardization
+
+`src/pipeline_m2.py` turns the Milestone 1 corpus into three Parquet tables:
+
+| Table | One row per |
+| --- | --- |
+| `tables/elements/` | distinct element of a paper across its versions: `element_id`, `arxiv_id`, `kind`, `content` |
+| `tables/hierarchy/` | node-parent edge of a version: `arxiv_id`, `version`, `element_id`, `parent_id` |
+| `tables/bibtex/` | reference after deduplication: `arxiv_id`, `citation_key`, `entry_type`, `title`, `authors`, `year`, `doi`, `journal`, `url` |
+
+```
+src/
+├── pipeline_m2.py        runs every step on every paper, writes the tables
+├── m2_contract.py        what the pipeline calls in each module
+├── gatherer.py           the compilation path of a version and its text as one document
+├── latex_scan.py         comments, verbatim text and brace groups, as TeX reads them
+├── cleaner.py            removes formatting commands
+├── normalizer.py         inline math as $...$, display math as \begin{equation}...\end{equation}
+├── sentence_splitter.py  sentences, without cutting at i.e., Fig. 1, URLs or decimals
+├── leaf_extractor.py     sentences, formulas and figures of a paragraph
+├── hierarchy.py          the tree of a version
+├── dedup_elements.py     unique node per occurrence within version; reuse across versions
+├── reference_parser/     \bibitem, .bib and .bbl to BibTeX rows, deduplication, \cite renames
+├── fetch_bbl.py          adds the .bbl files missing from a corpus crawled earlier
+├── validate_m2.py        checks the JSON files, the trees and the Parquet schemas
+├── benchmark_m2.py       measures a whole run (wall time, peak RAM, output size)
+├── group_benchmark_m2.py aggregates 5 M2 member ranges; invoked by group_benchmark.py --m2
+├── test_m2_full_fixes.py regression tests for M2 bug-fix cases
+├── statistics_m2.py      the numbers of the report
+├── export_report_data_m2.py  the small tables of the Jupyter Book's Milestone 2 part
+└── benchmark_colab_m2.ipynb   all the steps below on Google Colab, CPU-only
+```
+
+### 8.1. Environment
+
+The environment of [section 1](#1-setting-up-the-environment) is enough: `pyarrow` writes the tables and
+`psutil` measures the benchmark. Keep the data folder on a local disk (on Colab
+`/content`, not Google Drive, which is slow with many small files). `DATA_DIR` below is the
+folder given to `main.py --data-dir`. Run every command from the repository root.
+
+### 8.2. Run order
+
+Run these in order, once for each `DATA_DIR`:
+
+```bash
+# 1. Check the code (offline, a few seconds)
+python src/test_m2_bbl.py
+python src/test_m2_member1.py
+python src/test_m2_member2.py
+python src/reference_parser/test_m2_member3.py
+python src/test_m2_member4.py
+python src/test_m2_full_fixes.py
+
+# 2. Add the missing .bbl files. Only for a corpus crawled before .bbl files were kept.
+#    Run it before step 3, so the parse reads them. The first command sends no request.
+python src/fetch_bbl.py --data-dir DATA_DIR --dry-run
+python src/fetch_bbl.py --data-dir DATA_DIR
+
+# 3. Trial on 5 papers
+python src/pipeline_m2.py --data-dir DATA_DIR --test --workers 2 --force
+python src/validate_m2.py --data-dir DATA_DIR --limit 5 --require-parquet
+
+# 4. Parse the whole corpus under the benchmark. benchmark_m2.py starts pipeline_m2.py itself.
+#    On Colab, set Runtime -> Change runtime type -> CPU first.
+python src/benchmark_m2.py --data-dir DATA_DIR --workers 2 --force --environment google_colab --cpu-only-declared
+
+# 5. Check the output
+python src/validate_m2.py --data-dir DATA_DIR --require-parquet
+
+# 6. The numbers of the report. reference_stats.py gives the BibTeX counts before deduplication.
+python src/reference_parser/reference_stats.py --data-dir DATA_DIR
+python src/statistics_m2.py --data-dir DATA_DIR --counterfactual-parquet
+```
+
+To parse without measuring anything, step 4 becomes `python src/pipeline_m2.py --data-dir DATA_DIR`.
+
+`fetch_bbl.py` is not part of the benchmark: it downloads, while the benchmark measures the parser.
+`src/benchmark_colab_m2.ipynb` runs all these steps on Colab for one data folder. It saves the `.bbl`
+files to Drive as it goes, so a new runtime does not download them again.
+
+### 8.3. The group's five ranges
+
+Run section 8.2 for each range's folder, then join the tables that each run left in its folder:
+
+```bash
+python src/pipeline_m2.py --data-dir DIR_1 DIR_2 DIR_3 DIR_4 DIR_5 --export-only --out TABLES_DIR
+```
+
+Each folder keeps its own benchmark, validation and statistics. Run all five ranges on
+Colab CPU-only, with the raw corpus copied to local `/content` (not parsed on Drive).
+**Force a complete reparse after applying the M2 full fixes:** old `parsed/`/tables
+no longer meet the one-parent-per-node invariant.
+
+Measure the separate `--export-only` aggregation stage as well:
+
+```bash
+python src/benchmark.py --data-dir /content/export_workspace \
+  --output-dir /content/export_logs --interval 0.5 -- \
+  python src/pipeline_m2.py --data-dir DIR_1 DIR_2 DIR_3 DIR_4 DIR_5 \
+  --export-only --out TABLES_DIR
+```
+
+`/content/export_workspace` is a scratch directory for benchmark disk sampling;
+`TABLES_DIR` is the final merged Parquet output. Preserve the generated
+`performance_summary_*.json` as `EXPORT_SUMMARY` (and check its `command`
+includes `--export-only` and `return_code == 0`). Then aggregate:
+
+```bash
+python src/group_benchmark.py --m2 \
+  A=DIR_1 B=DIR_2 C=DIR_3 D=DIR_4 E=DIR_5 \
+  --expected-per-member 5000 --tables-dir TABLES_DIR \
+  --export-summary EXPORT_SUMMARY --out GROUP_REPORT
+```
+
+Change `--expected-per-member` if Moodle assigns a different count. The group
+aggregation recomputes dedup rates from summed counts, adds sequential wall
+times **including export**, uses the highest sampled RAM, and measures final
+bytes only from the **merged** tables. It exits nonzero when coverage,
+benchmark, output or validation is incomplete. Do not sum member percentages
+or summed RAM peaks.
+
+### 8.4. Why some references come from a `.bbl`
+
+A submission can hold a `.bbl` file instead of its `.bib` files, and then that `.bbl` is the only source
+of its references. As the instructor answered, these references must not be lost, so `extractor.py`
+keeps `.bbl` files next to `.tex` and `.bib`, and `gatherer.py` reads one only when the document has no
+`.bib` for its `\bibliography`. A corpus crawled earlier gets them from `fetch_bbl.py`, which downloads
+only the versions with citations and no source of references, and never replaces a file.
+A version whose source has no `.bbl` stays without references and is counted, see below.
+
+### 8.5. Resuming
+
+- `pipeline_m2.py` skips papers already parsed by the same code. A change in any Milestone 2 module
+  parses everything again; `--keep` skips them anyway, `--force` parses them all.
+- `fetch_bbl.py` goes on where it stopped and tries failed downloads again. A version whose source had no
+  `.bbl` is asked again only with `--retry-no-bbl`.
+- A run cut off by Colab is not a complete benchmark: its numbers are not an end-to-end wall time.
+
+### 8.6. Output
+
+| Path in `DATA_DIR` | Content |
+| --- | --- |
+| `corpus/<yymm-id>/parsed/` | `elements.json`, `hierarchy.json`, `bibtex.json`, `cite_rename_map.json`, `gathering.json` (per version: root, files, `.bbl` read, problems) |
+| `tables/` | the three Parquet tables and `tables.json` (row counts and sizes) |
+| `logs/parse_log.csv`, `logs/parse_manifest.jsonl` | one row per paper and run; the state used for resuming |
+| `logs/bbl_log.csv` | one row per version asked by `fetch_bbl.py`: `added`, `no_bbl`, `not_found` or `failed` |
+| `logs/validation_report_m2.csv` | every check of `validate_m2.py`: `PASS`, `WARN` or `FAIL` |
+| `logs/performance_log_m2.csv` | wall time, peak RAM (sampled) and Parquet size of each benchmark run |
+| `logs/reference_log.csv` | per paper: BibTeX rows before and after deduplication, keys renamed, fields found |
+| `logs/summary_statistics_m2.csv` | `metric,value,unit,scope,source,note`, read by the report |
+
+In `summary_statistics_m2.csv`, `versions_references_from_bbl` counts the versions whose references came
+from a `.bbl`, and `versions_references_in_missing_bbl` those that name a `.bib` or `.bbl` that is not
+in the folder. Keep data, tables and logs out of this repository: the report reads only the aggregated numbers.
+
+See `docs/m2_references.md` for the reference steps, `docs/m2_member4.md` for validation,
+statistics and benchmark.
+
+### 8.7. Looking into the WARN rows
+
+After `validate_m2.py`, two read-only tools help decide whether a `WARN` is a source problem, a parser
+problem or only a validator heuristic. Neither changes the corpus, the tables or the validation statuses.
+
+```bash
+python src/audit_m2_warnings.py --data-dir DATA_DIR      # logs/warning_triage_m2.csv, warning_summary_m2.json
+python src/diagnose_m2_warnings.py --data-dir DATA_DIR   # logs/warning_evidence_m2.csv, warning_evidence_summary_m2.json
+python src/diagnose_m2_warnings.py --data-dir DATA_DIR --paper-ids 2604.07041 2604.08146
+```
+
+`audit_m2_warnings.py` groups the rows of `validation_report_m2.csv`; `diagnose_m2_warnings.py` reads the
+version folders, `parsed/` and the `.bib`/`.bbl` files and records the evidence of each case
+(for example `content_present_but_no_hierarchy_edges` for an empty tree whose source has text).
+A confirmed parser defect gets a regression test and a new `--force` run; zero `FAIL` alone does not
+prove that every citation was matched.
+
+### 8.8. The report data (`export_report_data_m2.py`)
+
+The book is built by GitHub Actions, which cannot read the results on Google Drive, and the parsed text must
+not be published before Milestone 3. After the notebook's sections 8–11, `export_report_data_m2.py` reads the
+result folder (`RESULT_DRIVE`, one `<range>_m2.tar.gz` per range and `_merged/`) without extracting it and writes
+small aggregated tables (counts, sizes, statuses, timings; no LaTeX text, no reference titles) into the book:
+
+```bash
+python src/export_report_data_m2.py --results /content/drive/MyDrive/g11_m2_benchmark \
+    --out <book repository>/data/m2
+```
+
+A range can also be given as `NAME=PATH` (a `.tar.gz` or a range's data folder) with `--merged _MERGED_DIR`.
+Commit the book's `data/m2/`; see its `README.md` for the files.
+
+## 9. Report (Jupyter Book)
 
 The milestone reports form one Jupyter Book, published at
 **<https://mituleefam.github.io/group11-arxiv-project-jupyter-book/>**.
@@ -525,7 +721,7 @@ book/
 Every figure and table is computed from `book/data/m1/` while the book compiles. The notebooks do not read
 the raw corpus, so no crawled data is needed to build the book.
 
-### 8.1. Building the book locally
+### 9.1. Building the book locally
 
 The book needs Python 3.11+ (pandas 3 requires it; GitHub Actions uses 3.12) and Node.js 18+; it offers to install Node.js if it is missing.
 
@@ -541,7 +737,7 @@ jupyter book build --html --execute     # static site in book/_build/html
 Activate the environment before building. Otherwise `jupyter` is not on the PATH and `--execute` fails with
 *Could not load Jupyter session manager*.
 
-### 8.2. Updating the book
+### 9.2. Updating the book
 
 1. Edit the chapters in the book repository, or regenerate `data/m1/` with `src/export_report_data.py`
    (section 7.9), then push to its `main` branch. The workflow rebuilds the book and republishes it.

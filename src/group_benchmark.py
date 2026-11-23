@@ -287,6 +287,13 @@ def hours(seconds) -> str:
 
 
 def main(argv=None) -> int:
+    # M2 aggregation lives in a separate, independently tested module.
+    # Preserve M1's CLI and statistics unchanged without --m2.
+    if argv is None:
+        argv = sys.argv[1:]
+    if "--m2" in argv:
+        from group_benchmark_m2 import main as m2_main
+        return m2_main([arg for arg in argv if arg != "--m2"])
     args = parse_args(argv)
     warnings: list[str] = []
     members = [member_row(name, root, warnings) for name, root in args.members]
