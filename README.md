@@ -665,7 +665,7 @@ In `summary_statistics_m2.csv`, `versions_references_from_bbl` counts the versio
 from a `.bbl`, and `versions_references_in_missing_bbl` those that name a `.bib` or `.bbl` that is not
 in the folder. Keep data, tables and logs out of this repository: the report reads only the aggregated numbers.
 
-See `docs/m2_references.md` for the reference steps, `docs/m2_member4.md` for validation,
+See `docs/m2_references.md` for the reference steps, `docs/m2_dedup_validation.md` for validation,
 statistics and benchmark.
 
 ### 8.7. Looking into the WARN rows

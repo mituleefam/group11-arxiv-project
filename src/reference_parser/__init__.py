@@ -10,5 +10,5 @@
 
 pipeline_m2.py reaches these modules through m2_contract.load(), which looks
 for each module at the top of src/ and then in this package.
-See docs/m2_member3_references.md.
+See docs/m2_references.md.
 """

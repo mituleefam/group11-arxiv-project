@@ -1,341 +1,341 @@
-# M3 – Gán nhãn: chọn bài gán tay và file gán tay
+# M3 – Labelling: choosing the manual publications and the labelling sheet
 
-Hai bước đầu của phần gán nhãn, chạy sau `m3_data.py` và `candidates.py` của Member 1 (xem `docs/m3_member1.md`):
+The first two labelling steps run after `m3_data.py` and `candidates.py` of Member 1 (see `docs/m3_data_candidates.md`):
 
-1. `src/m3/select_manual.py`: chọn bài để gán tay, **5 bài mỗi khoảng ID**.
+1. `src/m3/select_manual.py`: chooses the publications to label by hand, **5 publications per ID range**.
 2. `src/m3/label_sheet.py`:
-   - `export`: xuất file Excel để người gán điền;
-   - `import`: kiểm tra file đã điền rồi ghi ra file nhãn.
+   - `export`: writes the Excel file the labeller fills in;
+   - `import`: checks the filled-in file and writes the label file.
 
-Chỉ cần `pyarrow`. Muốn xuất ra `.xlsx` thì cần thêm `openpyxl` (`pip install openpyxl`); không có thì script tự xuất CSV.
+Only `pyarrow` is required. Writing `.xlsx` also needs `openpyxl` (`pip install openpyxl`); without it, the script writes CSV.
 
-## Thầy đã chốt gì (giải đáp Q&A)
+## What the lecturer settled (Q&A)
 
-| Câu hỏi | Thầy trả lời | Ảnh hưởng tới code |
+| Question | Answer | Effect on the code |
 |---|---|---|
-| Nhãn là gì | Một **nhãn = một cặp (entry, reference) khớp**. Entry không có reference nào thì **không phải nhãn**. | Bài gán tay phải có **≥ 20 cặp khớp**, mỗi thành viên **≥ 100 cặp**. Entry "không có" không được tính vào các con số này. |
-| MRR@5, \|Q\| | Entry không có reference **không phải sample hợp lệ**. Q chỉ gồm các nhãn matching. | Khi đánh giá chỉ dùng các dòng `is_match = true`. Dòng toàn "no" không nằm trong \|Q\|. |
-| Bài gán tay và luật tự động | Bài đã gán tay thì **không được** đưa qua pipeline gán tự động. | Luật auto phải loại các bài trong `manual_pick.csv`. |
-| Gán tự động | Dùng **thuật toán matching định ra từ trước** (luật), không dùng model nhóm train. **10% tính theo số bài**: mỗi thành viên khoảng 500 bài, cả nhóm khoảng 2.500. | Viết `auto_label.py` bằng luật. |
-| Chia tập | **Gộp chung cả nhóm**: số bài tay và tự động tính theo số thành viên, rồi gộp thành một bộ train/valid/test. Test có 5 tay + 5 tự động, valid cũng vậy. | `split.py` của Quân làm đúng. |
-| Ứng viên | Lấy từ references **của chính bài đó**. Bài có dưới 5 ứng viên thì các ô `cand_*` còn thiếu để **null**. | |
-| External knowledge | Chỉ tính là external khi phải gọi API ngoài, hoặc tải corpus hay pretrained model từ bên ngoài, lúc chạy trên Colab. TF-IDF, Word2Vec tự train trên corpus của nhóm, LR/RF/LightGBM đều **không** phải external. | |
-| Định dạng nhãn trung gian | Nhóm tự quyết. Chỉ chấm các bảng Parquet trên Hugging Face. | |
-| Nộp | Pipeline dùng chung. Mỗi thành viên trích **phần dữ liệu thuộc khoảng ID của mình** và host trên **Hugging Face cá nhân**. | |
+| What a label is | **One label = one matched (entry, reference) pair.** An entry without any reference is **not a label**. | A manual publication needs **≥ 20 matched pairs**, and each member **≥ 100 pairs**. Entries without a reference do not count towards these numbers. |
+| MRR@5, \|Q\| | An entry without a reference is **not a valid sample**. Q contains the matched labels only. | Evaluation uses the `is_match = true` rows only. An all-"no" row is not part of \|Q\|. |
+| Manual and automatic labelling | A publication labelled by hand **must not** go through the automatic labelling. | The automatic rules leave out the publications of `manual_pick.csv`. |
+| Automatic labelling | A **matching algorithm fixed in advance** (rules), not the model the group trains. **The 10% counts publications**: about 500 per member, about 2,500 for the group. | `auto_label.py` is written as rules. |
+| Split | **One pooled split for the group**: the numbers of manual and automatic publications follow the number of members, then everything forms one train/valid/test set. Test has 5 manual + 5 automatic publications, and so has valid. | `split.py` (Member 1) does this. |
+| Candidates | Taken from the references **of the same publication**. When a publication has fewer than 5 candidates, the missing `cand_*` cells are **null**. | |
+| External knowledge | Counts as external only when the run on Colab calls an outside API, or downloads an outside corpus or pretrained model. TF-IDF, Word2Vec trained on the group's corpus, and LR/RF/LightGBM are **not** external. | |
+| Intermediate label format | Up to the group. Only the Parquet tables on Hugging Face are graded. | |
+| Submission | One shared pipeline. Each member extracts **the data of their own ID range** and hosts it on **their own Hugging Face account**. | |
 
-## Chạy
+## Running
 
 ```bash
-# 1. chọn 5 bài cho mỗi khoảng có trong dữ liệu -> WORK/manual_pick.csv
+# 1. choose 5 publications for every range in the data -> WORK/manual_pick.csv
 python src/m3/select_manual.py --work data/m3_work --data-dir data/m1
 
-# 2a. xuất file để gán -> WORK/label_sheet_<tên>.xlsx
+# 2a. write the labelling file -> WORK/label_sheet_<name>.xlsx
 python src/m3/label_sheet.py export --work data/m3_work --picks data/m3_work/manual_pick.csv --labeler Bao
 
-# (điền file Excel)
+# (fill in the Excel file)
 
-# 2b. kiểm tra và ghi nhãn -> WORK/labels_manual_<tên>.csv
+# 2b. check it and write the labels -> WORK/labels_manual_<name>.csv
 python src/m3/label_sheet.py import --work data/m3_work --sheet data/m3_work/label_sheet_Bao.xlsx --labeler Bao
 
 python src/tests/m3/test_manual_labeling.py
 ```
 
-Khi chạy cho cả nhóm, truyền mọi thư mục M1 vào `--data-dir`. Mỗi người dùng `export --range <tên khoảng>` để lấy riêng bài của khoảng mình.
+For the whole group, pass every M1 folder to `--data-dir`. Each member uses `export --range <range name>` to get the publications of their own range only.
 
-## Bước 1: chọn bài như thế nào
+## Step 1: how the publications are chosen
 
-**Luật khớp chính xác.** Đây là cách ghép tự động đơn giản nhất: entry trỏ tới một reference của cùng bài khi có cùng arXiv ID, cùng DOI (kể cả DOI arXiv `10.48550/arxiv.<id>`), hoặc `title_clean` giống hệt. Từ luật này tính được:
+**Exact matching rules.** This is the simplest automatic matching: an entry points to a reference of the same publication when both have the same arXiv ID, the same DOI (the arXiv DOI `10.48550/arxiv.<id>` included), or an identical `title_clean`. From these rules:
 
-- `rule_matched`: số entry mà luật khớp được.
-- `sure_pairs`: số reference **khác nhau** mà luật tìm được. Đây là **cận dưới** của số nhãn bài sẽ có; người gán thường tìm thêm được những cặp luật bỏ sót.
-- `rule_share` = `rule_matched / m`: tỉ lệ entry đã được luật giải quyết. Phần còn lại là chỗ người gán phải tự phán đoán: hoặc một cặp luật bỏ sót, hoặc entry không có reference nào.
+- `rule_matched`: the number of entries the rules match.
+- `sure_pairs`: the number of **distinct** references the rules reach. This is a **lower bound** on the labels the publication will give; the labeller usually finds more, the pairs the rules miss.
+- `rule_share` = `rule_matched / m`: the share of entries the rules settle. The rest is what the labeller has to judge: either a pair the rules miss, or an entry with no reference at all.
 
-**Bài hợp lệ.** Ngưỡng nào cũng đổi được bằng tham số dòng lệnh.
+**Eligible publications.** Every threshold can be changed on the command line.
 
-| Điều kiện | Mặc định | Vì sao |
+| Condition | Default | Why |
 |---|---|---|
-| Trạng thái Semantic Scholar | `success` | danh sách reference đáng tin |
-| số entry m | 25 ≤ m ≤ 100 | đủ entry, và không quá dài để xem hết |
-| số reference có arXiv ID n | n ≥ 25 | đủ chỗ cho 20 cặp khớp (số nhãn không thể vượt n) |
-| `sure_pairs` | ≥ 10 | chắc chắn có sẵn một nửa số nhãn cần, tránh chọn phải bài không đạt nổi 20 nhãn |
-| entry không có title | ≤ 2 | entry thiếu title gần như không gán được |
-| entry `misc` | ≤ 30% | phần lớn misc là website hoặc phần mềm |
+| Semantic Scholar status | `success` | a reference list that can be trusted |
+| number of entries m | 25 ≤ m ≤ 100 | enough entries, and not too many to read through |
+| number of references with an arXiv ID n | n ≥ 25 | room for 20 matched pairs (the labels can never exceed n) |
+| `sure_pairs` | ≥ 10 | half of the required labels are already certain, so a publication that cannot reach 20 labels is not picked |
+| entries without a title | ≤ 2 | an entry without a title can hardly be labelled |
+| `misc` entries | ≤ 30% | most `misc` entries are websites or software |
 
-Trên khoảng 2604.05535–2604.10534 có 1.142 bài hợp lệ.
+The range 2604.05535–2604.10534 has 1,142 eligible publications.
 
-**Độ khó** được tính tương đối trong từng khoảng: xếp các bài hợp lệ theo `rule_share` rồi chia làm ba phần bằng nhau. Một phần ba bài có `rule_share` cao nhất là *dễ*, một phần ba thấp nhất là *khó*.
+**Difficulty** is relative inside each range: the eligible publications are sorted by `rule_share` and cut into three equal parts. The third with the highest `rule_share` is *easy*, the third with the lowest is *hard*.
 
-Không dùng `sure_pairs / n` để đo độ khó, vì trên khoảng của Bảo luật gần như đã tìm được mọi reference arXiv của bài hợp lệ: trung vị 1,0, phân vị 10% là 0,93. Con số này gần như bằng nhau ở mọi bài nên không phân biệt được bài dễ với bài khó.
+`sure_pairs / n` is not used as the difficulty, because on Bao's range the rules already reach almost every arXiv reference of an eligible publication: median 1.0, 10th percentile 0.93. The value is nearly the same for every publication, so it cannot tell easy from hard ones.
 
-**Rút bài.** Mỗi khoảng rút 5 bài: **1 dễ, 2 vừa, 2 khó**, rút ngẫu nhiên trong từng mức với seed cố định (`--seed 11`, cùng lệnh thì ra cùng kết quả). Nếu cả 5 bài đều là cs mà khoảng có bài hợp lệ ngoài cs, bài cuối được đổi sang một bài cùng mức ngoài cs.
+**Drawing.** Each range draws 5 publications: **1 easy, 2 medium, 2 hard**, at random inside each level with a fixed seed (`--seed 11`: the same command gives the same result). When all 5 are cs papers and the range has an eligible paper outside cs, the last pick is swapped for one of the same level outside cs.
 
-Vì sao chọn như vậy:
-- Nếu chỉ toàn bài dễ, nhãn tay sẽ trùng với nhãn của luật tự động, và MRR trên test đẹp giả.
-- Trộn lĩnh vực để không chỉ đánh giá trên bài ML.
+Why:
+- With easy publications only, the manual labels would repeat the automatic rules, and the test MRR would look better than it is.
+- Mixing fields means the model is not evaluated on ML papers only.
 
-`--exclude FILE` bỏ qua các bài đã dùng, ví dụ khi cần chọn thêm.
+`--exclude FILE` skips publications already used, for example to pick more.
 
-`manual_pick.csv` có các cột: `range, arxiv_id, primary_category, m, n, rule_matched, sure_pairs, rule_share, difficulty, reason`.
+`manual_pick.csv` has the columns `range, arxiv_id, primary_category, m, n, rule_matched, sure_pairs, rule_share, difficulty, reason`.
 
-## Bước 2: file gán tay
+## Step 2: the labelling file
 
-**Sheet `entries`.** Mỗi dòng là một entry của bài đã chọn, lấy **mọi entry** của bài, sắp theo bài rồi theo `citation_key`.
+**Sheet `entries`.** One row per entry of the chosen publications: **every entry** of each publication, sorted by publication and then by `citation_key`.
 
-| Cột | Là gì |
+| Column | Meaning |
 |---|---|
-| `arxiv_id` … `arxiv_id_in_entry` | entry như M2 ghi (title, authors, year, journal, url, doi) |
-| `rule_hint` | luật khớp chính xác nối entry với reference nào (`same DOI -> 2504.13554`); trống nếu không có luật nào |
-| **`label_ref_arxiv_id`** | **người gán điền**: `ref_arxiv_id` đúng; **để trống = không có reference nào của bài là entry này** |
-| **`checked`** | **người gán điền `x`** khi đã quyết xong dòng (kể cả khi để trống) |
-| **`note`** | ghi chú tuỳ ý |
-| `cand_1_*` … `cand_5_*` | 5 reference của cùng bài giống entry nhất: ID, title, tác giả, năm, điểm |
+| `arxiv_id` … `arxiv_id_in_entry` | the entry as M2 wrote it (title, authors, year, journal, url, doi) |
+| `rule_hint` | the reference an exact rule links the entry to (`same DOI -> 2504.13554`); empty when no rule applies |
+| **`label_ref_arxiv_id`** | **filled in by the labeller**: the correct `ref_arxiv_id`; **empty = no reference of the publication is this entry** |
+| **`checked`** | **the labeller writes `x`** once the row is decided (also when it stays empty) |
+| **`note`** | free note |
+| `cand_1_*` … `cand_5_*` | the 5 references of the same publication most similar to the entry: ID, title, authors, year, score |
 
-**Điểm gợi ý** chỉ dùng để sắp thứ tự, người gán vẫn tự quyết:
-- `0,6 × độ giống title` (difflib trên các từ đã sắp xếp)
-- `+ 0,3 × Jaccard họ tác giả`
-- `+ 0,1 × độ gần năm` (cùng năm 1, lệch một năm 0,5)
+**The suggestion score** only orders the candidates; the labeller decides:
+- `0.6 × title similarity` (difflib on the sorted words)
+- `+ 0.3 × Jaccard of the author surnames`
+- `+ 0.1 × year closeness` (same year 1, one year apart 0.5)
 
-Reference mà luật cùng arXiv ID hoặc cùng DOI chỉ ra được đưa lên đầu (điểm 1).
+A reference named by the same-arXiv-ID or same-DOI rule is put first (score 1).
 
-**Sheet `references`.** Mọi reference của các bài đã chọn, để tra khi không gợi ý nào đúng.
+**Sheet `references`.** Every reference of the chosen publications, to look up when no suggestion is right.
 
-**Sheet `README`.** Hướng dẫn điền.
+**Sheet `README`.** Instructions for filling in the file.
 
-**Vì sao cần cột `checked`:** ô `label_ref_arxiv_id` trống vừa có thể là "không khớp", vừa có thể là "chưa xem". Cột `checked` để phân biệt hai trường hợp này.
+**Why the `checked` column:** an empty `label_ref_arxiv_id` cell can mean "no match" as well as "not looked at yet". The `checked` column tells the two apart.
 
-**Vì sao không điền sẵn nhãn:** nhãn tay là thước đo để đánh giá luật tự động (precision/recall) và model. Nếu điền sẵn theo luật thì thước đo bị lệch theo luật. `rule_hint` chỉ là gợi ý, nên ghi trong poster là người gán có xem gợi ý.
+**Why the labels are not pre-filled:** the manual labels are the yardstick for the automatic rules (precision/recall) and for the model. Labels pre-filled from the rules would bias that yardstick towards the rules. `rule_hint` is only a hint, so the poster should state that the labellers saw the hints.
 
-## Định dạng file nhãn
+## Label file format
 
-`import` ghi `labels_manual_<tên>.csv`, **mỗi dòng là một entry đã xem** (đã có `x`):
+`import` writes `labels_manual_<name>.csv`, **one row per entry that was looked at** (marked `x`):
 
-| Cột | Là gì |
+| Column | Meaning |
 |---|---|
-| `arxiv_id`, `citation_key` | entry (khoá) |
-| `label_ref_arxiv_id` | reference đúng; trống nếu entry không có reference |
-| `is_match` | `true` khi có reference: **chỉ dòng này là nhãn** (tính vào 20/100, vào \|Q\| và vào train) |
-| `source` | `manual` (luật tự động sẽ ghi `auto`) |
-| `labeler` | người gán |
-| `note` | ghi chú |
+| `arxiv_id`, `citation_key` | the entry (key) |
+| `label_ref_arxiv_id` | the correct reference; empty when the entry has no reference |
+| `is_match` | `true` when there is a reference: **only these rows are labels** (counted in the 20/100, in \|Q\| and in training) |
+| `source` | `manual` (the automatic rules write `auto`) |
+| `labeler` | the labeller |
+| `note` | note |
 
-Dòng `is_match = false` vẫn được giữ trong file để biết entry đó đã được xem và quyết định là "không có", nhưng các bước sau (đặc trưng, train, đánh giá MRR) **chỉ dùng dòng `is_match = true`**.
+`is_match = false` rows stay in the file to record that the entry was looked at and judged to have no reference, but the later steps (features, training, MRR evaluation) **use the `is_match = true` rows only**.
 
-`split.py` đọc cột `arxiv_id` và `source`; `snapshot_diff.py` đọc `citation_key` và `label_ref_arxiv_id`. Nhãn của cả nhóm gộp lại bằng cách nối các file CSV.
+`split.py` reads the columns `arxiv_id` and `source`; `snapshot_diff.py` reads `citation_key` and `label_ref_arxiv_id`. The group's labels are combined by concatenating the CSV files.
 
-`import` từ chối ghi file (mã thoát 1) và liệt kê lỗi khi:
-- có dòng chưa có `x` ở `checked`;
-- `label_ref_arxiv_id` không phải reference của chính bài đó;
-- một entry xuất hiện hai lần;
-- một bài có ít hơn `--min-labelled` (mặc định 20) **cặp khớp**.
+`import` refuses to write the file (exit code 1) and lists the errors when:
+- a row has no `x` in `checked`;
+- `label_ref_arxiv_id` is not a reference of the same publication;
+- an entry appears twice;
+- a publication has fewer than `--min-labelled` (default 20) **matched pairs**.
 
-Ngoài ra `import` còn cảnh báo (vẫn ghi file) khi:
-- người gán có dưới 100 cặp khớp;
-- một reference là nhãn của nhiều entry trong cùng bài (thường là cùng một tài liệu bị trích hai lần, cần xem lại).
+`import` also warns (and still writes the file) when:
+- a labeller has fewer than 100 matched pairs;
+- one reference is the label of several entries of the same publication (usually the same work cited twice, to be checked).
 
-## Bước 3: gán nhãn tự động (`auto_label.py`)
+## Step 3: automatic labelling (`auto_label.py`)
 
 ```bash
-# gán tự động -> WORK/labels_auto.csv
+# automatic labels -> WORK/labels_auto.csv
 python src/m3/auto_label.py --work data/m3_all
 
-# đo chất lượng luật trên nhãn tay (chỉ để đo, không ghi nhãn)
+# measure the rules against the manual labels (measurement only, no label written)
 python src/m3/auto_label.py --work data/m3_all --evaluate data/m3_all/labels_manual_*.csv --errors data/m3_all/auto_vs_manual.csv
 
 python src/tests/m3/test_auto_label.py
 ```
 
-**Chọn bài (pool auto).** Theo thầy, 10% tính theo **số bài** ngoài phần gán tay, cho mỗi thành viên: ceil(0,10 × (5000 − 5)) = **500 bài mỗi khoảng**, cả nhóm 2.500 bài.
+**Choosing the publications (automatic pool).** As the lecturer answered, the 10% counts **publications** outside the manual pool, per member: ceil(0.10 × (5000 − 5)) = **500 publications per range**, 2,500 for the group.
 
-- Các bài trong `manual_pick.csv` **không bao giờ** được rút vào pool auto.
-- Chỉ rút từ bài có trạng thái S2 `success`, m ≥ 1 và n ≥ 5. Bài không có reference thì không sinh được nhãn, còn bài auto vào test/valid thì cần có ứng viên để xếp hạng.
-- Rút ngẫu nhiên với seed cố định theo từng khoảng.
-- Muốn lấy nhiều hơn thì dùng `--fraction`.
+- The publications of `manual_pick.csv` are **never** drawn into the automatic pool.
+- Only publications with Semantic Scholar status `success`, m ≥ 1 and n ≥ 5 are drawn. A publication without references cannot give a label, and an automatic publication that goes to test/valid needs candidates to rank.
+- The draw is random with a fixed seed per range.
+- `--fraction` takes more.
 
-**Luật** (định sẵn từ trước, không phải model). Các luật chạy trong một bài, theo thứ tự:
+**Rules** (fixed in advance, not a model). The rules run inside one publication, in this order:
 
-| Luật | Điều kiện |
+| Rule | Condition |
 |---|---|
-| R1 | trùng arXiv ID |
-| R2 | trùng DOI, kể cả DOI arXiv `10.48550/arxiv.<id>` |
-| R3 | `title_clean` trùng đúng một reference, title ≥ 3 từ, và (năm lệch ≤ 1 hoặc tác giả trùng); title ≤ 5 từ thì tác giả hai bên không được mâu thuẫn |
-| R4 | title giống ≥ 0,85, hơn reference giống thứ hai ≥ 0,10, tác giả trùng (họ tác giả đầu, hoặc ≥ một nửa các họ), năm lệch ≤ 1 |
+| R1 | same arXiv ID |
+| R2 | same DOI, the arXiv DOI `10.48550/arxiv.<id>` included |
+| R3 | `title_clean` equal to the title of exactly one reference, title ≥ 3 words, and (years at most 1 apart or the authors agree); for a title of ≤ 5 words, the authors of the two sides must not conflict |
+| R4 | title similarity ≥ 0.85, ≥ 0.10 above the second most similar reference, authors agree (same first-author surname, or at least half of the surnames shared), years at most 1 apart |
 
-**Xử lý trường hợp nhập nhằng**
+**Ambiguous cases**
 
-*(a) Các luật mâu thuẫn trên một entry.* R1–R3 chỉ ra hai reference khác nhau → không gán nhãn, `note` ghi `conflict`.
+*(a) Rules that disagree on one entry.* When R1–R3 name two different references, the entry gets no label and `note` records `conflict`.
 
-*(b) Kiểm tra lại nhãn R1/R2 (`id_mismatch`).* arXiv ID/DOI do tác giả ghi **cũng có thể sai**: tác giả dán nhầm ID của một bài khác, thường là bài khác của cùng nhóm, hoặc DOI bị gắn nhầm bài. Vì vậy nhãn R1/R2 bị bỏ (`note` ghi `id_mismatch …`) khi:
-- entry có **title đầy đủ**, **và**
-- title của entry giống title reference **< 0,15**, **và** thoả một trong hai điều kiện:
-  - tác giả không trùng, **hoặc**
-  - có một entry khác cùng bài khớp reference đó **theo title** (độ giống ≥ 0,85). Khi đó entry kia mới là bài đó, và nhãn được giao cho entry kia.
+*(b) Checking R1/R2 labels again (`id_mismatch`).* An arXiv ID or DOI written by the authors **can be wrong**: an ID pasted from another paper, often another paper of the same group, or a DOI attached to the wrong paper. An R1/R2 label is therefore dropped (`note` records `id_mismatch …`) when:
+- the entry has a **full title**, **and**
+- the entry's title has similarity **< 0.15** with the reference's title, **and** one of the following holds:
+  - the authors do not agree, **or**
+  - another entry of the same publication matches that reference **by its title** (similarity ≥ 0.85). That other entry is then the paper, and the label goes to it.
 
-  Trong trường hợp có entry khác như vậy, ngưỡng được nới lên **< 0,30 nếu tác giả không trùng**. Lý do: mọi bài đổi tên đã gặp đều giữ nguyên tác giả. Ví dụ bắt được nhờ nới ngưỡng: `autobio2024` ("Autobio: A benchmark for robotic biology labs", tác giả "Team AutoBio") mang ID của Chemistry3D (Li, Huang…), độ giống 0,21.
+  When such another entry exists, the threshold is raised to **< 0.30 when the authors do not agree**, because every renamed paper seen kept its authors. A case caught thanks to this: `autobio2024` ("Autobio: A benchmark for robotic biology labs", author "Team AutoBio") carries the ID of Chemistry3D (Li, Huang…), similarity 0.21.
 
-"Title đầy đủ" nghĩa là ≥ 4 từ và không phải mảnh vỡ do M2 đọc hỏng entry. Các mảnh bị loại: có chữ `arxiv`; tham chiếu tạp chí có số trong ≤ 8 từ (`Phys. A 20 3765`, `Chaos Solitons Fractals 202`); phần lớn là chữ viết tắt tên (`M. E. J. Newman`, `He and X. D. Ji`). Entry có title hỏng như vậy thì không bị nghi, vì ID/DOI của nó vẫn đúng.
+A "full title" has ≥ 4 words and is not a fragment left by M2 from a garbled entry. Fragments left out: titles containing `arxiv`; journal references with numbers in ≤ 8 words (`Phys. A 20 3765`, `Chaos Solitons Fractals 202`); titles that are mostly name initials (`M. E. J. Newman`, `He and X. D. Ji`). An entry with such a broken title is not suspected, since its ID/DOI is still correct.
 
-Vì sao ngưỡng chỉ là 0,15: **bài đổi tên giữa các phiên bản arXiv** vẫn giữ ID nhưng title khác hẳn, và độ giống của chúng trải từ 0,16 đến 1,0. Ví dụ: MonST3R 0,16; Emergent Misalignment 0,21 (bản Nature đổi tên); MathVista 0,41; PlanBench 0,54 (bản arXiv đầu tên là "LLMs Still Can't Plan"). Trong khi đó, các ID bị dán nhầm có độ giống 0,07–0,21. Hai khoảng chồng nhau, và tác giả cũng không tách được hai loại (ID dán nhầm thường là của cùng nhóm tác giả). Vì vậy chọn ngưỡng thấp, chấp nhận còn sót vài ID sai để không bỏ nhầm bài đổi tên.
+Why the threshold is only 0.15: **papers renamed between arXiv versions** keep their ID while their title changes completely, and their similarity ranges from 0.16 to 1.0. Examples: MonST3R 0.16; Emergent Misalignment 0.21 (renamed for Nature); MathVista 0.41; PlanBench 0.54 (the first arXiv version was called "LLMs Still Can't Plan"). Wrongly pasted IDs, on the other hand, have similarities of 0.07–0.21. The two ranges overlap, and the authors do not separate them either (a wrongly pasted ID usually belongs to the same group of authors). A low threshold was therefore chosen, accepting a few wrong IDs left in rather than dropping renamed papers.
 
-*(c) Nhiều entry cùng trỏ một reference → giữ tất cả, `note` ghi `shared`.* Đây là cùng một bài được trích bằng nhiều key: .bib trùng, có cả bản preprint lẫn bản đăng, hoặc một entry bị M2 đọc hỏng. Mỗi entry là một nhãn.
+*(c) Several entries pointing to one reference → all are kept, `note` records `shared`.* This is the same work cited under several keys: a duplicated .bib entry, both the preprint and the published version, or an entry garbled by M2. Each entry is a label.
 
-Bản đầu xử lý (c) khác: nhãn R3/R4 tranh reference với nhãn R1/R2 thì bị bỏ. Mình đã đọc lại **102 ca bị bỏ** như vậy:
+The first version handled (c) differently: an R3/R4 label competing with an R1/R2 label for the same reference was dropped. The **102 cases dropped** that way were read again:
 
-| Loại | Số |
+| Kind | Count |
 |---|---|
-| entry bị bỏ thực ra đúng: cùng bài được trích hai lần | 66 |
-| entry bị bỏ thực ra đúng: entry R1/R2 có title bị M2 đọc hỏng | 12 |
-| entry bị bỏ thực ra đúng: entry R1/R2 là bản arXiv cũ, đã đổi tên | 15 |
-| entry bị bỏ đúng, còn **entry R1/R2 mới là cái sai** (ID dán nhầm) | ~6 |
-| chưa chắc | ~4 |
+| the dropped entry was right: the same work cited twice | 66 |
+| the dropped entry was right: the R1/R2 entry has a title garbled by M2 | 12 |
+| the dropped entry was right: the R1/R2 entry is an older, renamed arXiv version | 15 |
+| the dropped entry was right, and **the R1/R2 entry was the wrong one** (pasted ID) | ~6 |
+| unsure | ~4 |
 
-Vì vậy đã đổi sang cách (b) + (c).
+The rules were therefore changed to (b) + (c).
 
-`labels_auto.csv` cùng định dạng với nhãn tay (`source = auto`, `note` = tên luật).
+`labels_auto.csv` has the same format as the manual labels (`source = auto`, `note` = the rule).
 
-**Kết quả trên dữ liệu cả nhóm** (`data/m3_all`, seed 11): 2.500 bài, 124.456 entry, **62.601 nhãn**. Trung vị 20 nhãn mỗi bài (trung bình 25, tối đa 300); 7 bài không có nhãn nào.
+**Result on the group's data** (`data/m3_all`, seed 11): 2,500 publications, 124,456 entries, **62,601 labels**. Median 20 labels per publication (mean 25, maximum 300); 7 publications have no label.
 
-| Khoảng | Bài | Entry | Nhãn | R1 | R2 | R3 | R4 |
+| Range | Publications | Entries | Labels | R1 | R2 | R3 | R4 |
 |---|---|---|---|---|---|---|---|
-| Tram | 500 | 24.848 | 12.752 | 4.987 | 2.404 | 5.215 | 146 |
-| Thu | 500 | 25.562 | 12.758 | 5.217 | 2.650 | 4.772 | 119 |
-| Phat | 500 | 26.313 | 12.407 | 4.327 | 2.528 | 5.415 | 137 |
-| Bao | 500 | 24.752 | 12.344 | 4.436 | 2.429 | 5.348 | 131 |
-| Quan | 500 | 22.981 | 12.340 | 4.556 | 2.058 | 5.570 | 156 |
-| **Tổng** | **2.500** | **124.456** | **62.601** | **23.523** | **12.069** | **26.320** | **689** |
+| Tram | 500 | 24,848 | 12,752 | 4,987 | 2,404 | 5,215 | 146 |
+| Thu | 500 | 25,562 | 12,758 | 5,217 | 2,650 | 4,772 | 119 |
+| Phat | 500 | 26,313 | 12,407 | 4,327 | 2,528 | 5,415 | 137 |
+| Bao | 500 | 24,752 | 12,344 | 4,436 | 2,429 | 5,348 | 131 |
+| Quan | 500 | 22,981 | 12,340 | 4,556 | 2,058 | 5,570 | 156 |
+| **Total** | **2,500** | **124,456** | **62,601** | **23,523** | **12,069** | **26,320** | **689** |
 
-Ngoài số nhãn ở bảng trên:
-- 388 nhãn mang ghi chú `shared`.
-- 9 entry bị bỏ vì các luật mâu thuẫn (`conflict`).
-- 11 nhãn R1/R2 bị bỏ vì `id_mismatch`. Đọc tay cả 11 thì đều là ID/DOI sai thật:
-  - 5 ID dán nhầm từ bài khác: `wang2024answers…`, `yang2025scalable…`, `jiang2023llmparser`, `autobio2024`, `mastqlp` (DOI của bộ dữ liệu);
-  - 6 DOI trỏ sang bài khác hẳn: `Efstathiou2022`, `Farrah2022`, `Pfeifle2019b`, `white1992density`, `merloni_fabian`, `golden2008vehicle`.
+Besides the labels of the table:
+- 388 labels carry the note `shared`.
+- 9 entries were left without a label because the rules disagreed (`conflict`).
+- 11 R1/R2 labels were dropped as `id_mismatch`. All 11 were read by hand and all are truly wrong IDs/DOIs:
+  - 5 IDs pasted from another paper: `wang2024answers…`, `yang2025scalable…`, `jiang2023llmparser`, `autobio2024`, `mastqlp` (the DOI of a dataset);
+  - 6 DOIs pointing to an unrelated paper: `Efstathiou2022`, `Farrah2022`, `Pfeifle2019b`, `white1992density`, `merloni_fabian`, `golden2008vehicle`.
 
-So với bản trước, cả 102 entry từng bị bỏ đều đã được gán, và 11 nhãn sai bị loại; sau đó lần kiểm tra cuối (bên dưới) loại thêm 18 nhãn R3 sai: **62.528 → 62.601**.
+Compared with the previous version, all 102 entries dropped before are now labelled and the 11 wrong labels are removed; the final check below then removed 18 more wrong R3 labels: **62,528 → 62,601**.
 
-**Kiểm tra cuối** (đọc tay, không đổi luật dựa trên một ca riêng lẻ):
+**Final check** (read by hand; no rule was changed for a single case):
 
-1. **Mẫu ngẫu nhiên 40 nhãn** trên toàn bộ: cả 40 đều đúng.
-2. **R3 với title ngắn và tác giả khác nhau.** Nhóm này có lỗi: những title chung chung trùng với một bài khác hẳn. Thêm điều kiện: title ≤ 5 từ thì tác giả hai bên không được mâu thuẫn. Tác giả là tổ chức (`Team Qwen`, `OpenAI`) và họ phiên âm khác (`Shanskii`/`Shansky`) không bị coi là mâu thuẫn. Kết quả loại 18 nhãn, đọc tay cả 18 đều sai:
-   - 10 nhãn "Generative adversarial networks" (Goodfellow) bị nối nhầm vào bài tổng quan cùng tên của Cohen & Giryes (2022);
-   - "Quantum phase transitions" (sách của Sachdev ↔ bài của Vojta, 2 nhãn);
+1. **A random sample of 40 labels** over everything: all 40 correct.
+2. **R3 with a short title and different authors.** This group had errors: generic titles shared with an unrelated paper. Added condition: for a title of ≤ 5 words, the authors of the two sides must not conflict. Organisations as authors (`Team Qwen`, `OpenAI`) and surnames transliterated differently (`Shanskii`/`Shansky`) do not count as a conflict. 18 labels were removed, and all 18 were wrong on reading:
+   - 10 "Generative adversarial networks" labels (Goodfellow) linked by mistake to the review of the same title by Cohen & Giryes (2022);
+   - "Quantum phase transitions" (Sachdev's book ↔ Vojta's paper, 2 labels);
    - "Gaia Data Release 2" (Brown ↔ Katz);
    - "The fractional quantum Hall effect" (Störmer, Tsui ↔ Rao);
-   - "Self-guided masked autoencoder", "Retrieval Augmented Time Series Forecasting", "Interlayer pairing in bilayer nickelates", "Avoiding long Berge-cycles": mỗi title có hai bài khác nhau.
-3. **R1/R2 có title rất khác reference** (title đầy đủ, độ giống < 0,3): có 152 nhãn. Tra **title v1 trên arXiv** của từng reference (API arXiv, chỉ dùng để kiểm tra, không dùng trong luật):
-   - 104 nhãn có title entry giống title v1: là bài đổi tên, hoặc S2 lưu title lỗi (`OUP accepted manuscript`, mã MathML, `\documentclass…`). Các nhãn này **đúng**.
-   - 35 nhãn trong đó M2 lấy nhầm nơi đăng, tên tác giả hoặc tên tạp chí làm title (`In Proceedings of the 2020 CHI Conference…`). ID/DOI của các nhãn này vẫn **đúng**.
-   - **~10 nhãn sai thật**: tác giả dán ID/DOI của một bài khác **cùng nhóm**, ví dụ `rawat_rl`, `LMSWY2`, `Ball2012`, `Fiacconi2017`, `Cao2019`, `munshi_quantifying_2021`, `papadopoulos2014handbook`, `matsumoto_algebraic_2002`, `Lahiri2019`. Còn 1 nhãn trỏ vào bản ghi S2 rác (`Green:2004wb` → "paper added in error by admin team"). Luật **không bắt được** nhóm này: tác giả trùng và title khác hẳn, y như bài đổi tên.
-   - ~3 nhãn chưa chắc: `brito-etal-2025-modeling`, `RW`, `Greener2025_PNAS…`.
+   - "Self-guided masked autoencoder", "Retrieval Augmented Time Series Forecasting", "Interlayer pairing in bilayer nickelates", "Avoiding long Berge-cycles": each title belongs to two different papers.
+3. **R1/R2 whose title is far from the reference's** (full title, similarity < 0.3): 152 labels. The **v1 title on arXiv** of each reference was looked up (arXiv API, for this check only, not used by the rules):
+   - 104 labels have an entry title matching the v1 title: renamed papers, or a broken title stored by S2 (`OUP accepted manuscript`, MathML markup, `\documentclass…`). These labels are **correct**.
+   - 35 labels where M2 took the venue, an author name or the journal name as the title (`In Proceedings of the 2020 CHI Conference…`). Their ID/DOI is still **correct**.
+   - **~10 labels are truly wrong**: the authors pasted the ID/DOI of another paper **of the same group**, for example `rawat_rl`, `LMSWY2`, `Ball2012`, `Fiacconi2017`, `Cao2019`, `munshi_quantifying_2021`, `papadopoulos2014handbook`, `matsumoto_algebraic_2002`, `Lahiri2019`. One more label points to an S2 junk record (`Green:2004wb` → "paper added in error by admin team"). The rules **cannot catch** this group: the authors agree and the title is completely different, exactly like a renamed paper.
+   - ~3 labels unsure: `brito-etal-2025-modeling`, `RW`, `Greener2025_PNAS…`.
 
-**Ước lượng chất lượng:** đã biết khoảng 10–13 nhãn sai còn lại trên 62.601 nhãn (~0,02%). Với các nhóm chưa đọc hết thì ước lượng từ mẫu ngẫu nhiên (40/40 đúng). Không thể khẳng định là không còn nhãn sai nào. Bảng `labels_auto.csv` nên được coi là nhãn "bạc" có độ chính xác rất cao, không phải nhãn vàng.
+**Estimated quality:** about 10–13 wrong labels are known to remain among 62,601 (~0.02%). For the groups not read in full, the estimate comes from the random sample (40/40 correct). It cannot be claimed that no wrong label is left. `labels_auto.csv` should be seen as very high-precision "silver" labels, not gold labels.
 
-Phát hiện phụ cho M3 (làm sạch): title phía Semantic Scholar còn mã MathML (`<mml:math …>`), LaTeX (`\documentclass[12pt]{minimal}…`) và title giả (`OUP accepted manuscript`). `title_clean` chưa xử lý các trường hợp này, nên các cặp đó có độ giống title thấp dù khớp.
+Side finding for M3 (cleaning): Semantic Scholar titles still contain MathML markup (`<mml:math …>`), LaTeX (`\documentclass[12pt]{minimal}…`) and placeholder titles (`OUP accepted manuscript`). `title_clean` does not handle these yet, so such pairs have a low title similarity although they match.
 
-**Độ giống title của R4** (`--sim`):
-- Mặc định `chars`: **Jaccard các 3-gram ký tự của title đã bỏ khoảng trắng**. Nhờ bỏ khoảng trắng, `M 2 diffuser` và `M2Diffuser` cho cùng một tập 3-gram; một từ bị đổi chỉ làm lệch vài 3-gram.
-- Bản đầu là `words`: tỉ lệ difflib trên các từ đã sắp xếp, ngưỡng 0,93. Cách này bỏ sót `M 2 diffuser` (0,89), vì khi sắp xếp, các mảnh "m" và "2" bị đẩy đi chỗ khác.
+**R4 title similarity** (`--sim`):
+- Default `chars`: **Jaccard of the character 3-grams of the title without spaces**. Without spaces, `M 2 diffuser` and `M2Diffuser` give the same 3-grams, and a changed word only changes a few 3-grams.
+- The first version was `words`: the difflib ratio of the sorted words, threshold 0.93. It missed `M 2 diffuser` (0.89), because sorting moves the pieces "m" and "2" elsewhere.
 
-So hai cách trên các cặp thật:
+The two measures on real pairs:
 
-| Cặp | words | chars |
+| Pair | words | chars |
 |---|---|---|
-| `M 2 diffuser` ↔ `M2Diffuser` (cùng bài) | 0,89 | 1,00 |
-| `Towards` ↔ `Toward Generalist…` (cùng bài) | 0,99 | 0,94 |
-| `Embodied SAM` ↔ `EmbodiedSAM` (cùng bài) | 0,93 | 1,00 |
-| `DDPM` ↔ `Improved DDPM` (khác bài) | 0,90 | 0,83 |
-| `Qwen3-TTS` ↔ `Qwen3-ASR` (khác bài) | 0,85 | 0,62 |
-| `V2V4Real` ↔ `V2X-Real` (khác bài) | 0,81 | 0,60 |
+| `M 2 diffuser` ↔ `M2Diffuser` (same paper) | 0.89 | 1.00 |
+| `Towards` ↔ `Toward Generalist…` (same paper) | 0.99 | 0.94 |
+| `Embodied SAM` ↔ `EmbodiedSAM` (same paper) | 0.93 | 1.00 |
+| `DDPM` ↔ `Improved DDPM` (different papers) | 0.90 | 0.83 |
+| `Qwen3-TTS` ↔ `Qwen3-ASR` (different papers) | 0.85 | 0.62 |
+| `V2V4Real` ↔ `V2X-Real` (different papers) | 0.81 | 0.60 |
 
-`chars` tách hai nhóm (cùng bài / khác bài) rõ hơn. Ngoài ra, cặp nào lọt qua ngưỡng vẫn còn phải qua điều kiện cách biệt với ứng viên thứ hai, tác giả trùng và năm gần.
+`chars` separates the two groups (same paper / different papers) more clearly. A pair above the threshold must still pass the margin over the second candidate, the author agreement and the year closeness.
 
-Số nhãn R4 trên pool 2.500 bài theo ngưỡng (`words` 0,93 cho 601):
+R4 labels on the 2,500-publication pool by threshold (`words` at 0.93 gives 601):
 
-| ngưỡng `chars` | 0,90 | **0,85** | 0,80 | 0,75 |
+| `chars` threshold | 0.90 | **0.85** | 0.80 | 0.75 |
 |---|---|---|---|---|
-| nhãn R4 | 541 | **673** | 739 | 799 |
+| R4 labels | 541 | **673** | 739 | 799 |
 
-Chọn 0,85. Xem bằng mắt 12 cặp mới (có ở 0,85, không có ở `words` 0,93) thì cả 12 đều đúng: `blue holonomic…` ↔ `holonomic…`, `deepfake` ↔ `deep fake`, `RingAttention` ↔ `Ring Attention`, `P 5` ↔ `P5`, title có năm dính ở cuối… Ở 0,75 bắt đầu xuất hiện các cặp chỉ khớp một phần title, ví dụ title thiếu tiền tố tên hệ thống (`Grid-Agent: …`) hoặc bản đổi tên.
+0.85 was chosen. The 12 new pairs (present at 0.85, absent with `words` at 0.93) were read and all 12 are correct: `blue holonomic…` ↔ `holonomic…`, `deepfake` ↔ `deep fake`, `RingAttention` ↔ `Ring Attention`, `P 5` ↔ `P5`, titles with the year stuck at the end… At 0.75, pairs matching only part of the title begin to appear, for example a title without the system-name prefix (`Grid-Agent: …`) or a renamed version.
 
-**Đo trên 168 nhãn tay của khoảng Bao (5 bài):** precision 1,000, recall 1,000 (168/168).
-- R1: 31, R2: 55, R3: 79, R4: 3; không có nhãn sai.
-- Với `words` 0,93 thì chỉ được 167/168 (bỏ sót `M 2 diffuser`).
+**Measured on the 168 manual labels of the Bao range (5 publications):** precision 1.000, recall 1.000 (168/168).
+- R1: 31, R2: 55, R3: 79, R4: 3; no wrong label.
+- With `words` at 0.93, only 167/168 (`M 2 diffuser` missed).
 
-Lưu ý quan trọng: R3 (cho phép năm lệch khi tác giả trùng), cùng với độ đo và ngưỡng của R4, đều được chỉnh sau khi xem chính 168 nhãn này. Lúc đầu R3 đòi năm lệch ≤ 1 và bỏ sót 5 bản tạp chí đăng sau bản preprint 2–3 năm. Vì vậy con số trên **lạc quan**. Số đo khách quan là đo trên nhãn tay của 4 khoảng còn lại, những nhãn chưa dùng để chỉnh luật.
+Important caveat: R3 (allowing a year gap when the authors agree) and the measure and threshold of R4 were all tuned after looking at these same 168 labels. At first R3 required years at most 1 apart and missed 5 journal versions published 2–3 years after the preprint. The numbers above are therefore **optimistic**. The unbiased measurement is the one on the manual labels of the other 4 ranges, which were not used for tuning.
 
-Kiểm tra bằng mắt 15 cặp R4 ngẫu nhiên: cả 15 cặp đều đúng. Các dạng gặp: thừa chữ `blue` (lệnh màu LaTeX còn sót lại), `Embodied SAM` ↔ `EmbodiedSAM`, `^4He` ↔ `4 He`, title thiếu tiền tố `REALM:`.
+A visual check of 15 random R4 pairs: all 15 correct. Patterns seen: a stray `blue` (a leftover LaTeX colour command), `Embodied SAM` ↔ `EmbodiedSAM`, `^4He` ↔ `4 He`, a title without the `REALM:` prefix.
 
-## Bước 4: gộp nhãn (`merge_labels.py`) và cách dùng nhãn
+## Step 4: merging the labels (`merge_labels.py`) and how the labels are used
 
 ```bash
-# gộp mọi labels_manual_*.csv + labels_auto.csv -> WORK/labels.csv
+# merge every labels_manual_*.csv + labels_auto.csv -> WORK/labels.csv
 python src/m3/merge_labels.py --work data/m3_all --suspects data/m3_all/suspect_auto_labels.csv
-# khi các thành viên còn đang gán: các mức tối thiểu chỉ in cảnh báo
+# while the members are still labelling: the minimums only print warnings
 python src/m3/merge_labels.py --work data/m3_all --suspects data/m3_all/suspect_auto_labels.csv --allow-incomplete
 
-# chia tập (script của Member 1); --per-range: mỗi thành viên góp 1 bài tay + 1 bài auto vào test và vào valid
+# split (Member 1's script); --per-range: each member puts 1 manual + 1 automatic publication into test and into valid
 python src/m3/split.py --labels data/m3_all/labels.csv --seed 11 --per-range \
     --stats data/m3_all/split_rankable.csv --out data/m3_all/splits.json
 
 python src/tests/m3/test_merge_labels.py
 ```
 
-**File ra**
+**Output files**
 
-| File | Nội dung |
+| File | Content |
 |---|---|
-| `labels.csv` | mọi entry đã được quyết định (nhãn tay và nhãn auto), các cột như file nhãn tay cộng thêm `range`. Giữ cả dòng `is_match = false`, vì bảng `predictions` có một dòng cho **mỗi** entry của các bài dùng cho matching (dòng không có reference thì `groundtruth_arxiv_id = null`). |
-| `label_summary.csv` | theo khoảng: số bài, số entry, số nhãn tay và nhãn auto, số bài auto cần có |
-| `split_rankable.csv` | `arxiv_id, n` dùng cho `split.py --stats`. Các bài **không được** vào test/valid có `n = 0`: bài không có reference, bài auto không ra nhãn nào, bài có nhãn auto đã biết là sai (`--suspects`) |
+| `labels.csv` | every decided entry (manual and automatic labels), with the columns of the manual label file plus `range`. The `is_match = false` rows are kept, because the `predictions` table has one row for **every** entry of the publications used for matching (an entry without a reference has `groundtruth_arxiv_id = null`). |
+| `label_summary.csv` | per range: publications, entries, manual and automatic labels, the number of automatic publications required |
+| `split_rankable.csv` | `arxiv_id, n` for `split.py --stats`. Publications that **must not** go to test/valid get `n = 0`: publications without references, automatic publications without any label, publications with an automatic label known to be wrong (`--suspects`) |
 
-**Kiểm tra (lỗi thì dừng, không ghi file)**
-- cột đúng; `source` là `manual` hoặc `auto`; `is_match` khớp với `label_ref_arxiv_id`;
-- entry có trong `entries_clean.parquet` và chỉ xuất hiện một lần;
-- nhãn là reference có arXiv ID của **chính bài đó**;
-- không bài nào vừa tay vừa auto; không bài trong `manual_pick.csv` lọt vào nhãn auto;
-- theo từng khoảng: ≥ 5 bài tay, mỗi bài ≥ 20 nhãn, ≥ 100 nhãn tay, và số bài auto ≥ 10% số bài ngoài phần gán tay. Với `--allow-incomplete`, các mức này chỉ in cảnh báo.
+**Checks (an error stops the script, nothing is written)**
+- the columns are right; `source` is `manual` or `auto`; `is_match` agrees with `label_ref_arxiv_id`;
+- every entry exists in `entries_clean.parquet` and appears once;
+- every label is a reference with an arXiv ID of **the same publication**;
+- no publication is both manual and automatic; no publication of `manual_pick.csv` is in the automatic labels;
+- per range: ≥ 5 manual publications, each with ≥ 20 labels, ≥ 100 manual labels, and automatic publications ≥ 10% of the publications outside the manual pool. With `--allow-incomplete`, these minimums only print warnings.
 
-`data/m3_all/suspect_auto_labels.csv` liệt kê 13 nhãn auto đã biết là sai hoặc đáng ngờ (xem "Kiểm tra cuối" ở bước 3). Các nhãn này vẫn nằm trong train, vì 0,02% nhiễu không đáng kể khi train. Nhưng bài chứa chúng không được rút vào test/valid, để MRR không bị chấm theo đáp án sai.
+`data/m3_all/suspect_auto_labels.csv` lists 13 automatic labels known to be wrong or doubtful (see "Final check" in step 3). They stay in training, since 0.02% noise is negligible there, but the publications holding them are not drawn into test/valid, so that MRR is never scored against a wrong answer.
 
-**Kết quả chính thức** (đủ nhãn tay của 5 thành viên, chế độ chuẩn, đạt mọi kiểm tra): 2.525 bài, 126.065 entry, **63.612 nhãn**.
+**Official result** (the manual labels of all 5 members, standard mode, every check passed): 2,525 publications, 126,065 entries, **63,612 labels**.
 
-| Khoảng | Bài tay / nhãn tay | Bài auto / nhãn auto |
+| Range | Manual publications / labels | Automatic publications / labels |
 |---|---|---|
-| Tram | 5 / 241 | 500 / 12.752 |
-| Thu | 5 / 179 | 500 / 12.758 |
-| Phat | 5 / 207 | 500 / 12.407 |
-| Bao | 5 / 168 | 500 / 12.344 |
-| Quan | 5 / 216 | 500 / 12.340 |
-| **Tổng** | **25 / 1.011** | **2.500 / 62.601** |
+| Tram | 5 / 241 | 500 / 12,752 |
+| Thu | 5 / 179 | 500 / 12,758 |
+| Phat | 5 / 207 | 500 / 12,407 |
+| Bao | 5 / 168 | 500 / 12,344 |
+| Quan | 5 / 216 | 500 / 12,340 |
+| **Total** | **25 / 1,011** | **2,500 / 62,601** |
 
-Ngoài ra có 62.453 entry "không khớp" (598 ở bài tay, 61.855 ở bài auto): giữ lại cho bảng predictions, nhưng không phải sample. 19 bài bị giữ ngoài test/valid: bài không có nhãn nào, hoặc bài chứa nhãn auto nghi sai.
+There are also 62,453 "no match" entries (598 in manual publications, 61,855 in automatic ones): kept for the predictions table, but not samples. 19 publications are kept out of test/valid: publications without any label, or with a doubtful automatic label.
 
-**Kiểm tra nhãn tay của 4 thành viên** (ngoài các kiểm tra của `import`):
-- So với hint của luật: chỉ có 1 dòng không theo hint, và người gán đúng (`PhysRevC.90.057602`: S2 gắn nhầm DOI của bài 2014 cho bài 2021).
-- 11 cặp khớp không có hint: đọc lại, tất cả đều hợp lý.
-- 8 ca một reference được gán cho 2 entry: đều là cùng một bài được trích hai lần, có note giải thích.
-- Quét các nhãn có title trùng nhưng tác giả mâu thuẫn: tìm ra **1 nhãn sai** và đã sửa. `NielsenChuang` (sách Nielsen & Chuang, không có trên arXiv) bị gán vào `1210.0736`, một bài khác trùng tên của Ya-Zhen Wang (2012).
+**Checks of the manual labels of 4 members** (on top of the checks of `import`):
+- Against the rule hints: only 1 row departs from the hint, and the labeller is right (`PhysRevC.90.057602`: S2 attached the DOI of a 2014 paper to a 2021 paper).
+- 11 matched pairs without a hint: read again, all plausible.
+- 8 cases of one reference labelled for 2 entries: all are the same work cited twice, with an explanatory note.
+- A scan of the labels with an identical title but conflicting authors found **1 wrong label**, now fixed: `NielsenChuang` (the book by Nielsen & Chuang, not on arXiv) was labelled as `1210.0736`, an unrelated paper of the same title by Ya-Zhen Wang (2012).
 
-**Đo khách quan luật auto** trên nhãn tay của 4 khoảng chưa từng dùng để chỉnh luật: precision **0,999**, recall **0,986** (832 đúng, 1 sai, 12 bỏ sót). Ca sai duy nhất là DOI mà S2 gắn nhầm. Các ca bỏ sót chủ yếu là title ≤ 2 từ (R3 đòi ≥ 3 từ), bài đổi tên, và tên phiên âm (Schütz/Schuetz). Chi tiết ở `auto_vs_manual_4ranges.csv`.
+**Unbiased measurement of the automatic rules** on the manual labels of the 4 ranges never used for tuning: precision **0.999**, recall **0.986** (832 correct, 1 wrong, 12 missed). The only wrong case is a DOI that S2 attached to the wrong paper. The misses are mostly titles of ≤ 2 words (R3 requires ≥ 3 words), renamed papers and transliterated names (Schütz/Schuetz). Details in `auto_vs_manual_4ranges.csv`.
 
-**Chia tập** (`--per-range`, seed 11): mỗi khoảng góp đúng 1 bài tay + 1 bài auto vào test, và 1 + 1 vào valid.
+**Split** (`--per-range`, seed 11): each range puts exactly 1 manual + 1 automatic publication into test, and 1 + 1 into valid.
 
-| Tập | Bài tay | Bài auto | Nhãn | Entry |
+| Set | Manual publications | Automatic publications | Labels | Entries |
 |---|---|---|---|---|
-| train | 15 | 2.490 | 62.866 | 124.867 |
+| train | 15 | 2,490 | 62,866 | 124,867 |
 | valid | 5 | 5 | 400 | 598 |
 | test | 5 | 5 | 346 | 600 |
 
-Ba tập không trùng bài nào; bài trong test/valid đều có ứng viên và không chứa nhãn auto nghi sai.
+The three sets share no publication; every publication of test/valid has candidates and no doubtful automatic label.
 
-### Cách dùng nhãn cho đặc trưng, train và đánh giá (Member 3, 4)
+### How the labels are used for features, training and evaluation (Members 3, 4)
 
-Theo giải đáp của thầy, **một nhãn là một cặp (entry, reference) khớp**. Entry có `is_match = false` **không phải là sample**.
+As the lecturer answered, **a label is a matched (entry, reference) pair**. An entry with `is_match = false` **is not a sample**.
 
-- **Sample** = mỗi entry có `is_match = true`. Ứng viên của nó là **n reference của chính bài đó** (các dòng trong `candidates.parquet`):
-  - 1 cặp **yes**: `(entry, label_ref_arxiv_id)`;
-  - n − 1 cặp **no**: các reference còn lại của bài.
-- **Không** tạo cặp "no" từ các entry `is_match = false`. Luật auto ưu tiên precision nên cố ý bỏ sót một số cặp khớp thật. Nếu coi các entry đó là toàn "no" thì sẽ dạy sai model.
-- **MRR@5:** |Q| = số entry `is_match = true` của tập test. Ứng viên lấy từ references của chính bài đó. Bài có dưới 5 ứng viên thì các ô `cand_k` còn thiếu để null.
-- **Bảng `predictions`:** một dòng cho mọi entry trong `labels.csv` (cả `true` lẫn `false`). Cột `partition` lấy từ `splits.json`; `groundtruth_arxiv_id` = `label_ref_arxiv_id` (để trống nếu `false`).
-- **Chia tập** theo bài (`splits.json`); một bài không bao giờ vừa ở train vừa ở test.
-- **Bài auto trong test được chấm theo nhãn do luật tạo ra.** Nếu đặc trưng của model gồm đúng các tín hiệu của luật (trùng ID, trùng DOI, title giống hệt) thì MRR trên phần auto sẽ cao gần như hiển nhiên. Vì vậy nên báo MRR **riêng** cho phần tay và phần auto, và báo thêm MRR khi che các đặc trưng link (xem phần "học đường tắt").
+- **Sample** = each entry with `is_match = true`. Its candidates are **the n references of the same publication** (the rows of `candidates.parquet`):
+  - 1 **yes** pair: `(entry, label_ref_arxiv_id)`;
+  - n − 1 **no** pairs: the other references of the publication.
+- **No** "no" pairs are built from `is_match = false` entries. The automatic rules favour precision and miss some true pairs on purpose; treating those entries as all "no" would teach the model wrong answers.
+- **MRR@5:** |Q| = the number of `is_match = true` entries of the test set. The candidates come from the references of the same publication. When a publication has fewer than 5 candidates, the missing `cand_k` cells are null.
+- **`predictions` table:** one row for every entry of `labels.csv` (`true` and `false`). The `partition` column comes from `splits.json`; `groundtruth_arxiv_id` = `label_ref_arxiv_id` (empty when `false`).
+- **The split** is by publication (`splits.json`); a publication is never in both train and test.
+- **Automatic publications in test are scored against labels produced by the rules.** When the model's features include exactly the rules' signals (same ID, same DOI, identical title), MRR on the automatic part is almost bound to be high. MRR should therefore be reported **separately** for the manual and the automatic parts, together with MRR when the link features are masked (see the "shortcut learning" part of `docs/m3_model.md`).

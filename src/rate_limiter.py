@@ -194,15 +194,15 @@ AWS_MAX_STRIKES = 5                    # failures of AWS itself in a row before 
 # Organization may be denied every other region by a service control policy). Empty: the default list.
 AWS_REGIONS = [r.strip() for r in os.environ.get("ARXIV_AWS_REGIONS", "").split(",") if r.strip()]
 
-# Webshare nhiều tài khoản (xem "Webshare" ở docstring). ARXIV_PROXY_LARGE_FILES=1: file nguồn AWS
-# không chở được vì quá 10 MB đi xoay vòng Colab + WARP + từng tài khoản Webshare. Mặc định tắt: như cũ.
+# Several Webshare accounts (see "Webshare" in the docstring). ARXIV_PROXY_LARGE_FILES=1: a source file that
+# AWS cannot carry because it is over 10 MB rotates over Colab + WARP + each Webshare account. Off by default.
 PROXY_LARGE_FILES = os.environ.get("ARXIV_PROXY_LARGE_FILES", "0").strip().lower() in ("1", "true", "yes", "on")
-ACCOUNT_BAD_IPS = 3                    # số IP của một tài khoản cùng bị bỏ thì bỏ cả tài khoản
-_TUNNEL_STATUS = re.compile(r"Tunnel connection failed: (\d{3})")  # mã proxy trả cho CONNECT (https)
+ACCOUNT_BAD_IPS = 3                    # this many IPs of one account dropped: drop the whole account
+_TUNNEL_STATUS = re.compile(r"Tunnel connection failed: (\d{3})")  # status the proxy returns to CONNECT (https)
 
 
 def _is_warp_running(host: str = WARP_HOST, port: int = WARP_PORT) -> bool:
-    """Tự động kiểm tra xem Cloudflare WARP (Proxy mode) có đang bật trên máy không."""
+    """Check whether Cloudflare WARP (proxy mode) is running on this machine."""
     try:
         with socket.create_connection((host, port), timeout=0.2):
             return True
@@ -211,7 +211,7 @@ def _is_warp_running(host: str = WARP_HOST, port: int = WARP_PORT) -> bool:
 
 
 def _socks_available() -> bool:
-    """socks5h:// (WARP) cần PySocks: pip install "requests[socks]"."""
+    """socks5h:// (WARP) needs PySocks: pip install "requests[socks]"."""
     try:
         import socks  # noqa: F401  (PySocks)
         return True
@@ -220,12 +220,12 @@ def _socks_available() -> bool:
 
 
 def _mask(proxy: str) -> str:
-    """Che user:pass khi in proxy ra log."""
+    """Hide user:pass when a proxy is printed to the log."""
     return re.sub(r"//[^@/]*@", "//***@", proxy) if proxy else "mạng gốc"
 
 
-# Proxy/WARP vừa lỗi kết nối: tạm bỏ qua trong QUARANTINE_SECONDS rồi thử lại.
-# Lỗi của proxy không phải lỗi của arXiv, nên không báo về ARXIV_EXPORT (không dừng cả crawler).
+# A proxy/WARP route that just failed to connect is skipped for QUARANTINE_SECONDS, then tried again.
+# A proxy failure is not an arXiv refusal, so it is not reported to ARXIV_EXPORT (the crawler does not stop).
 QUARANTINE_SECONDS = 300.0
 _bad_until: dict[str, float] = {}
 _bad_lock = threading.Lock()
@@ -235,21 +235,21 @@ def _quarantine(proxy: str, reason: str) -> None:
     with _bad_lock:
         now = time.monotonic()
         new = _bad_until.get(proxy, 0.0) <= now
-        # max: không rút ngắn một IP/tài khoản đã bị bỏ hẳn (hết dung lượng, 407)
+        # max: never shorten the pause of an IP/account dropped for good (out of data, 407)
         _bad_until[proxy] = max(_bad_until.get(proxy, 0.0), now + QUARANTINE_SECONDS)
     if new:
         print(f"[proxy] {_route_name(proxy)}: {reason}, bỏ qua {QUARANTINE_SECONDS / 60:g} phút "
               f"(request được thử lại qua đường kế tiếp; không tính là arXiv từ chối)", flush=True)
 
 
-_FOREVER = float("inf")  # bỏ hẳn cho phần còn lại của tiến trình (một bước của crawler)
-_accounts_off: set[int] = set()  # tài khoản Webshare đã bỏ hẳn
+_FOREVER = float("inf")  # dropped for the rest of the process (one step of the crawler)
+_accounts_off: set[int] = set()  # Webshare accounts dropped for good
 
 
 def _proxy_failed(proxy: str, exc: BaseException) -> None:
-    """Proxy `proxy` của vòng xoay không chở được request (lỗi kết nối). Với
-    https, Webshare trả lý do trong câu trả lời CONNECT, requests đưa vào
-    thông báo lỗi: "Tunnel connection failed: 402 Payment Required"."""
+    """The rotation's proxy `proxy` could not carry the request (connection error). For
+    https, Webshare gives the reason in its answer to CONNECT, which requests puts in the
+    error message: "Tunnel connection failed: 402 Payment Required"."""
     m = _TUNNEL_STATUS.search(str(exc))
     status = int(m[1]) if m else 0
     _proxy_refused(proxy, status, f"lỗi kết nối ({type(exc).__name__}"
@@ -257,11 +257,11 @@ def _proxy_failed(proxy: str, exc: BaseException) -> None:
 
 
 def _proxy_refused(proxy: str, status: int, reason: str) -> None:
-    """402: tài khoản hết dung lượng/chưa trả tiền -> bỏ cả tài khoản. 407:
-    IP này không nhận user/pass (bị thay khỏi danh sách, sai mật khẩu) -> bỏ
-    hẳn IP. Lỗi khác: tạm bỏ IP 5 phút như cũ. ACCOUNT_BAD_IPS IP của cùng một
-    tài khoản cùng bị bỏ: lỗi nằm ở tài khoản, bỏ cả tài khoản (hẳn nếu là
-    407, 5 phút nếu không) thay vì thử lần lượt từng IP còn lại."""
+    """402: the account is out of data or unpaid -> drop the whole account. 407:
+    this IP does not accept the user/pass (replaced in the list, wrong password) -> drop
+    the IP for good. Any other error: pause the IP for 5 minutes. When ACCOUNT_BAD_IPS IPs of
+    the same account are dropped, the fault is the account's: drop the whole account (for good
+    on a 407, for 5 minutes otherwise) instead of trying its remaining IPs one by one."""
     n = _ACCOUNT_OF.get(proxy)
     if status == 402 and n:
         _drop_account(n, "hết dung lượng hoặc gói chưa trả (proxy trả HTTP 402)", _FOREVER)
@@ -290,8 +290,8 @@ def _proxy_refused(proxy: str, status: int, reason: str) -> None:
 
 
 def _drop_account(n: int, reason: str, seconds: float) -> None:
-    """Bỏ mọi IP của tài khoản Webshare thứ `n` trong `seconds` giây (_FOREVER:
-    cho phần còn lại của bước; bước sau tự thử lại một lần)."""
+    """Drop every IP of Webshare account `n` for `seconds` seconds (_FOREVER: for the
+    rest of the step; the next step tries the account once more)."""
     ips = WEBSHARE_ACCOUNTS[n - 1]
     with _bad_lock:
         if n in _accounts_off:
@@ -372,8 +372,8 @@ def _is_source(url: str) -> bool:
     return "/src/" in url or "/pdf/" in url or "/e-print/" in url
 
 
-_large_urls: set[str] = set()  # file AWS trả "quá 10 MB" trong tiến trình này
-_large_papers: set[str] = set()  # bài có một phiên bản AWS báo quá 10 MB (các phiên bản khác thường cũng lớn)
+_large_urls: set[str] = set()  # files AWS reported as "over 10 MB" in this process
+_large_papers: set[str] = set()  # papers with a version AWS reported over 10 MB (their other versions are usually large too)
 
 
 def _paper_of(url: str) -> str:
@@ -392,10 +392,10 @@ def _known_large(url: str) -> bool:
 
 
 def _is_large(url: str) -> bool:
-    """File lớn đi vòng xoay có Webshare: chỉ khi bật ARXIV_PROXY_LARGE_FILES,
-    có proxy, và AWS đã báo file này (hoặc một phiên bản khác của cùng bài) quá
-    10 MB (AWS là nơi biết cỡ file trước khi tải: không có AWS thì mọi file đi
-    Colab/WARP như cũ)."""
+    """A large file takes the rotation with Webshare only when ARXIV_PROXY_LARGE_FILES is on,
+    there are proxies, and AWS has reported this file (or another version of the same paper)
+    over 10 MB (AWS is where the size is known before the download: without AWS every file
+    goes through Colab/WARP)."""
     return PROXY_LARGE_FILES and _known_large(url) and len(_LARGE_FILE_LIST) > len(_UNLIMITED_LIST)
 
 
@@ -502,15 +502,16 @@ def _wait_new_turn(url: str) -> None:
 
 
 def _has_explicit_proxy(proxies) -> bool:
-    """True khi request đã có proxy thật cho http/https (người gọi truyền vào, hoặc HTTPS_PROXY
-    của máy). Dict chỉ có khoá lạ như 'no' (từ NO_PROXY) không tính, nên vẫn xoay được."""
+    """True when the request already has a real proxy for http/https (passed by the caller, or the
+    machine's HTTPS_PROXY). A dict with only other keys such as 'no' (from NO_PROXY) does not
+    count, so the rotation still applies."""
     if not proxies:
         return False
     return any(v for k, v in proxies.items() if k.split(":")[0] in ("http", "https", "all"))
 
 
 def _load_external_proxies() -> list[str]:
-    """Đọc danh sách proxy từ biến môi trường ARXIV_PROXIES hoặc file proxies.txt."""
+    """Read the proxy list from the ARXIV_PROXIES environment variable or the proxies.txt file."""
     env_val = os.environ.get("ARXIV_PROXIES", "")
     if env_val.strip():
         return [p.strip() for p in env_val.split(",") if p.strip()]
@@ -524,9 +525,9 @@ def _load_external_proxies() -> list[str]:
 
 
 class ProxyPool:
-    """Xoay vòng: mỗi request lấy proxy kế tiếp trong danh sách (thread-safe),
-    bỏ qua proxy đang tạm nghỉ vì vừa lỗi kết nối, và đường (kể cả '' = mạng gốc)
-    đang tạm dừng vì arXiv vừa từ chối nó."""
+    """Rotation: each request takes the next proxy of the list (thread-safe), skipping
+    a proxy paused after a connection error and a route (including '' = the direct
+    connection) paused because arXiv just refused it."""
 
     def __init__(self, proxy_urls: list[str] | None = None):
         self._proxies = list(proxy_urls) if proxy_urls is not None else []
@@ -534,7 +535,7 @@ class ProxyPool:
         self._lock = threading.Lock()
 
     def next(self) -> str | None:
-        """Trả về URL proxy kế tiếp còn dùng được ('' = mạng gốc), hoặc None nếu danh sách rỗng."""
+        """The next usable proxy URL ('' = the direct connection), or None when the list is empty."""
         if not self._proxies:
             return None
         with self._lock:
@@ -546,11 +547,11 @@ class ProxyPool:
                     continue
                 if not proxy or _bad_until.get(proxy, 0.0) <= now:
                     return proxy
-            # mọi đường đang nghỉ: đường dùng lại được sớm nhất (cùng lúc thì mạng gốc)
+            # every route is paused: the one free soonest (the direct connection on a tie)
             return min(self._proxies, key=_free_again_at)
 
     def next_proxies_dict(self) -> dict[str, str] | None:
-        """Trả về dict proxies chuẩn cho thư viện requests (chuỗi '' = dùng mạng gốc)."""
+        """The proxies dict for the requests library ('' = the direct connection)."""
         proxy = self.next()
         if not proxy:
             return None
@@ -561,19 +562,19 @@ class ProxyPool:
 
 
 def _free_again_at(proxy: str) -> tuple[float, bool]:
-    """Khi nào `proxy` dùng lại được: hết tạm dừng (arXiv từ chối) và hết bị
-    bỏ (lỗi proxy, tài khoản hết dung lượng); mạng gốc không bao giờ bị bỏ."""
+    """When `proxy` can be used again: its pause is over (arXiv refusal) and it is no longer
+    dropped (proxy error, account out of data); the direct connection is never dropped."""
     bad = _bad_until.get(proxy, 0.0) if proxy else 0.0
     return max(_route_paused_until.get(proxy, 0.0), bad), bool(proxy)
 
 
 class AccountPool:
-    """Xoay vòng hai tầng cho file lớn: lần lượt từng nhóm (Colab, WARP, rồi
-    MỖI TÀI KHOẢN Webshare là một nhóm), trong nhóm thì lần lượt từng IP.
-    Nhờ vậy mỗi tài khoản nhận phần bằng Colab hay WARP (5 tài khoản: mỗi
-    đường 1/7 số file lớn), dung lượng của từng tài khoản dùng đều, và mạng
-    Colab/WARP (không giới hạn dung lượng) vẫn gánh phần của mình. Bỏ qua
-    đường đang tạm dừng và IP/tài khoản đang bị bỏ như ProxyPool."""
+    """Two-level rotation for large files: one group after the other (Colab, WARP, then
+    EACH Webshare account as one group), and inside a group one IP after the other.
+    Each account thus gets the same share as Colab or WARP (5 accounts: each route
+    carries 1/7 of the large files), the data of every account is used evenly, and the
+    Colab/WARP network (no data cap) still carries its share. Routes that are paused and
+    IPs/accounts that are dropped are skipped, as in ProxyPool."""
 
     def __init__(self, groups: list[list[str]]):
         self._groups = [list(g) for g in groups if g]
@@ -605,9 +606,9 @@ class AccountPool:
 
 
 def _group_accounts(proxies: list[str]) -> list[list[str]]:
-    """Gom proxy theo tài khoản Webshare: các IP của một tài khoản dùng chung
-    user/pass (dạng backbone p.webshare.io thêm -1, -2... vào user). Proxy
-    không có user/pass thì gom theo máy chủ. Giữ thứ tự, bỏ dòng trùng."""
+    """Group the proxies by Webshare account: the IPs of one account share the same
+    user/pass (the backbone p.webshare.io form adds -1, -2... to the user). A proxy
+    without user/pass is grouped by host. Keeps the order, drops duplicate lines."""
     accounts: dict[str, list[str]] = {}
     for p in dict.fromkeys(proxies):
         parts = urlsplit(p)
@@ -619,7 +620,7 @@ def _group_accounts(proxies: list[str]) -> list[list[str]]:
     return list(accounts.values())
 
 
-# 1. Danh sách không giới hạn dung lượng (Mạng gốc + WARP nếu máy có bật) -> Dùng tải /src/, /pdf/
+# 1. Routes without a data cap (direct connection + WARP when it runs here) -> used for /src/, /pdf/
 _UNLIMITED_LIST: list[str] = [""]
 if _is_warp_running():
     if _socks_available():
@@ -628,15 +629,15 @@ if _is_warp_running():
         print(f'[proxy] WARP đang mở ở {WARP_HOST}:{WARP_PORT} nhưng thiếu PySocks '
               f'(pip install "requests[socks]"): bỏ qua WARP', flush=True)
 
-# 2. Danh sách cho API nhẹ -> Gồm _UNLIMITED_LIST + mọi IP Webshare (ARXIV_PROXIES / proxies.txt)
+# 2. Routes for the light API calls -> _UNLIMITED_LIST + every Webshare IP (ARXIV_PROXIES / proxies.txt)
 _EXTERNAL_PROXIES: list[str] = _load_external_proxies()
 PROXIES: list[str] = _UNLIMITED_LIST + _EXTERNAL_PROXIES
 
 PROXY_POOL = ProxyPool(PROXIES)
 UNLIMITED_POOL = ProxyPool(_UNLIMITED_LIST)
 
-# 3. File > 10 MB (AWS không chở được), khi bật ARXIV_PROXY_LARGE_FILES: Colab + WARP + từng tài khoản
-#    Webshare (5 tài khoản x 10 IP -> 7 nhóm xoay vòng, xem AccountPool).
+# 3. Files > 10 MB (AWS cannot carry them), with ARXIV_PROXY_LARGE_FILES on: Colab + WARP + each Webshare
+#    account (5 accounts x 10 IPs -> 7 groups in rotation, see AccountPool).
 WEBSHARE_ACCOUNTS: list[list[str]] = _group_accounts(_EXTERNAL_PROXIES)
 _ACCOUNT_OF: dict[str, int] = {p: n for n, ips in enumerate(WEBSHARE_ACCOUNTS, 1) for p in ips}
 _LARGE_FILE_LIST: list[str] = _UNLIMITED_LIST + [p for ips in WEBSHARE_ACCOUNTS for p in ips]
@@ -1064,7 +1065,7 @@ class _ArxivAdapter(HTTPAdapter):
                 return response
             _wait_new_turn(url)  # the same request again, through another route
 
-        if _is_source(url):  # file > 10 MB (AWS vừa báo): vòng xoay có Webshare; còn lại Colab/WARP như cũ
+        if _is_source(url):  # file > 10 MB (just reported by AWS): the rotation with Webshare; others Colab/WARP
             pool = LARGE_FILE_POOL if _is_large(url) else UNLIMITED_POOL
         else:
             pool = self.proxy_pool
@@ -1083,12 +1084,12 @@ class _ArxivAdapter(HTTPAdapter):
             response = super().send(request, *args, **kwargs)
         except (requests.ConnectionError, requests.Timeout) as exc:
             if chosen:
-                _proxy_failed(chosen, exc)  # 402/407 của Webshare: bỏ cả tài khoản / IP; còn lại: 5 phút
+                _proxy_failed(chosen, exc)  # Webshare 402/407: drop the account / IP; anything else: 5 minutes
             else:
                 ARXIV_EXPORT.failed(request.url, f"no answer ({type(exc).__name__})", route=route)
             raise
         if chosen in _ACCOUNT_OF and response.status_code in (402, 407):
-            # URL http:// qua proxy: Webshare trả lỗi như một câu trả lời (arXiv không bao giờ trả 402/407).
+            # http:// URL through a proxy: Webshare returns the error as a response (arXiv never answers 402/407).
             response.close()
             _proxy_refused(chosen, response.status_code, f"proxy trả HTTP {response.status_code}")
             raise requests.exceptions.ProxyError(f"proxy trả HTTP {response.status_code}", request=request)
@@ -1117,9 +1118,9 @@ class _ArxivAdapter(HTTPAdapter):
                          or (_is_source(url) and response.status_code == 500
                              and "internal server error" in low))
             if too_large:
-                _large_urls.add(url)  # gửi lại qua vòng xoay file lớn (Colab/WARP + Webshare nếu bật)
+                _large_urls.add(url)  # sent again through the large-file rotation (Colab/WARP + Webshare when on)
                 if _paper_of(url):
-                    _large_papers.add(_paper_of(url))  # các phiên bản khác của bài: khỏi thử AWS
+                    _large_papers.add(_paper_of(url))  # the paper's other versions: skip AWS
             _aws_fallback(url, error + (" (quá 10 MB)" if too_large else ""), own_failure=not too_large)
             return None, False
         _aws_answered()
@@ -1235,7 +1236,7 @@ _announced = False
 
 
 def _announce_large_files() -> None:
-    """In một lần mỗi tiến trình: file > 10 MB đi những đường nào."""
+    """Print once per process which routes the files > 10 MB take."""
     global _announced
     if _announced or not PROXY_LARGE_FILES:
         return
@@ -1265,8 +1266,8 @@ def get_with_retry(session: requests.Session, url: str, *, params=None,
     Returns (response, attempts, error): `response` is the last response
     received (None after a network error) and `error` is "" on HTTP 200.
 
-    Mỗi lần retry khi đi qua `session.get()` sẽ tự động được `_ArxivAdapter`
-    cấp một proxy kế tiếp trong pool.
+    Every retry through `session.get()` automatically gets the next proxy of the
+    pool from `_ArxivAdapter`.
     """
     response, error = None, ""
     backoff = first_backoff

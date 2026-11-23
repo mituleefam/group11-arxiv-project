@@ -1,6 +1,6 @@
-# M3 – Đặc trưng (feature engineering)
+# M3 – Features (feature engineering)
 
-Đầu vào: `labels.csv` (xem `docs/m3_labeling.md`), cùng `entries_clean.parquet` và `references_clean.parquet` (xem `docs/m3_member1.md`). Phần phân tích có biểu đồ nằm trong notebook `src/m3/notebooks/m3_features_model.ipynb`.
+Input: `labels.csv` (see `docs/m3_labeling.md`), with `entries_clean.parquet` and `references_clean.parquet` (see `docs/m3_data_candidates.md`). The analysis with figures is in the notebook `src/m3/notebooks/m3_features_model.ipynb`.
 
 ```bash
 python src/m3/features.py --work data/m3_all                       # -> features.parquet, features.json
@@ -8,87 +8,87 @@ python src/m3/feature_report.py --work data/m3_all --part train    # -> feature_
 python src/tests/m3/test_features.py
 ```
 
-## 1. Cách đặt bài toán: learning to rank
+## 1. Framing: learning to rank
 
-Mỗi BibTeX entry là một **nhóm**. Ứng viên của nó là các reference có arXiv ID của **chính bài đó**, tức một dòng của ma trận m×n trong đề.
-- Model chấm điểm từng cặp (entry, ứng viên), sắp xếp, rồi lấy top 5. Như vậy khớp trực tiếp với MRR@5.
-- Đặc trưng được tính trên **từng cặp**, nên cùng một bảng dùng được cho cả model xếp hạng (LightGBM `lambdarank`, model chính) lẫn model phân loại cặp (Logistic Regression, baseline).
+Each BibTeX entry is a **group**. Its candidates are the references with an arXiv ID of **the same publication**, that is, one row of the m×n matrix of the statement.
+- The model scores each (entry, candidate) pair, sorts the candidates and keeps the top 5. This matches MRR@5 directly.
+- The features are computed **per pair**, so the same table serves both the ranking model (LightGBM `lambdarank`, the main model) and a pairwise classifier (Logistic Regression, a baseline).
 
-**Sample.** Theo giải đáp của thầy, một nhãn là **một cặp khớp**. Vì vậy chỉ entry có `is_match = true` mới là sample. Mỗi sample cho một nhóm gồm 1 cặp `y = 1` (reference đúng) và n − 1 cặp `y = 0`. Entry "không khớp" vẫn có dòng (`is_sample = 0`), nhưng chỉ để model xếp hạng cho bảng predictions; chúng không dùng để train, không dùng để chấm, và **không bao giờ** bị coi là mẫu âm.
+**Samples.** As the lecturer answered, a label is **a matched pair**. Only entries with `is_match = true` are therefore samples. Each sample gives a group of 1 pair with `y = 1` (the correct reference) and n − 1 pairs with `y = 0`. "No match" entries still have rows (`is_sample = 0`), but only so that the model ranks their candidates for the predictions table; they are not used for training or scoring, and are **never** treated as negatives.
 
-Quy mô `features.parquet`: 4.636.680 cặp, 126.065 entry, trong đó 63.612 là sample.
+Size of `features.parquet`: 4,636,680 pairs, 126,065 entries, of which 63,612 are samples.
 
-## 2. Các đặc trưng (31, chia 6 nhóm)
+## 2. The features (31, in 6 groups)
 
-Ký hiệu: E là entry, R là reference ứng viên. Title đã được làm sạch: bỏ LaTeX, bỏ dấu, chữ thường, bỏ dấu câu. Tác giả so theo **họ**. NaN nghĩa là không tính được, ví dụ do thiếu title.
+Notation: E is the entry, R the candidate reference. Titles are cleaned: LaTeX removed, accents removed, lower case, punctuation removed. Authors are compared by **surname**. NaN means the value cannot be computed, for example when a title is missing.
 
-| Nhóm | Đặc trưng | Cách tính | Ý tưởng |
+| Group | Feature | Computation | Idea |
 |---|---|---|---|
-| link | `id_match` | arXiv ID ghi trong E (url/journal/doi/title) = ID của R | bằng chứng gần như chắc chắn, nhưng chỉ khoảng 37% entry có ID |
-| | `doi_match` | DOI của E = DOI của R, hoặc = `10.48550/arxiv.<ID>` | như trên, cho DOI |
-| | `entry_has_id`, `entry_has_doi` | E có ghi ID / DOI không | cho model biết "không trùng ID" là do thiếu ID hay do khác bài |
-| | `entry_id_in_paper`, `entry_doi_in_paper` | ID / DOI của E có khớp reference nào trong bài không | *bị bỏ: trùng với `entry_has_*`* |
-| title | `title_jacc3` | Jaccard các 3-gram ký tự của title đã bỏ khoảng trắng | chịu được viết dính/tách (`M 2 diffuser` = `M2Diffuser`), lệch ít chữ thì mất ít |
-| | `title_jacc_word` | Jaccard tập từ (bỏ stop-word) | đơn giản; nhạy với cách tách từ |
-| | `title_tfidf` | cosine TF-IDF; IDF tính từ mọi title trong corpus của nhóm | từ hiếm có trọng số cao hơn từ phổ biến |
-| | `title_exact`, `title_contain` | title giống hệt; title này chứa title kia | tín hiệu rõ; bắt title bị cắt hoặc thêm phụ đề |
-| | `title_len_ratio` | độ dài ngắn / độ dài dài | phân biệt "X" với "Improved X" |
-| | `entry_title_missing` | E không có title | báo cho model phải dựa vào tác giả và năm |
-| author | `first_author_match` | họ tác giả đầu của E nằm trong các họ của R | trích dẫn thường giữ đúng tác giả đầu |
-| | `author_jacc`, `author_overlap` | Jaccard và số họ trùng | phân biệt bài cùng title nhưng khác tác giả |
-| | `entry_authors_missing`, `entry_authors_group` | E thiếu tác giả; tác giả chỉ là "et al." hoặc tổ chức | khi đó không trùng họ là bình thường |
-| year | `year_gap` | \|năm E − năm R\| nhỏ nhất (R có năm arXiv và năm S2) | bài đúng thường lệch 0–1 năm (preprint so với bản đăng) |
-| | `year_gap_signed` | như trên, có dấu | *bị bỏ: cặp đúng và cặp sai có cùng trung bình* |
-| | `year_missing` | thiếu năm | cờ |
-| venue | `venue_sim` | 3-gram Jaccard giữa journal/booktitle của E và venue của R | tín hiệu phụ |
-| | `entry_is_preprint` | E là preprint arXiv | *bị bỏ: trùng với `entry_has_id`* |
-| | `entry_type_code` | mã của `entry_type` | book/misc ít khi có trên arXiv |
-| context | `n_candidates` | số ứng viên của bài | |
-| | `title_rank`, `tfidf_rank`, `author_rank` | thứ hạng của R trong các ứng viên của E, theo từng độ giống | bài toán xếp hạng nên cần so **tương đối**: 0,6 có thể là cao nhất ở bài này nhưng kém ở bài khác |
-| | `title_gap_best`, `title_margin_second` | khoảng cách tới ứng viên tốt nhất; độ dẫn của ứng viên tốt nhất so với ứng viên thứ hai | độ chắc chắn của title |
-| | `title_is_best` | R có title giống nhất | *bị bỏ: trùng với `title_rank = 1`* |
+| link | `id_match` | the arXiv ID written in E (url/journal/doi/title) = the ID of R | near-certain evidence, but only about 37% of the entries carry an ID |
+| | `doi_match` | the DOI of E = the DOI of R, or = `10.48550/arxiv.<ID>` | the same, for DOIs |
+| | `entry_has_id`, `entry_has_doi` | whether E writes an ID / a DOI | tells the model whether "no ID match" means a missing ID or a different paper |
+| | `entry_id_in_paper`, `entry_doi_in_paper` | whether the ID / DOI of E matches any reference of the publication | *dropped: duplicates `entry_has_*`* |
+| title | `title_jacc3` | Jaccard of the character 3-grams of the title without spaces | robust to joined/split words (`M 2 diffuser` = `M2Diffuser`); a few changed letters cost little |
+| | `title_jacc_word` | Jaccard of the word sets (stop-words removed) | simple; sensitive to how words are split |
+| | `title_tfidf` | TF-IDF cosine; the IDF is computed from every title of the group's corpus | rare words weigh more than common ones |
+| | `title_exact`, `title_contain` | identical titles; one title contains the other | clear signals; catch truncated titles or added subtitles |
+| | `title_len_ratio` | shorter length / longer length | separates "X" from "Improved X" |
+| | `entry_title_missing` | E has no title | tells the model to rely on authors and year |
+| author | `first_author_match` | the first-author surname of E is among the surnames of R | citations usually keep the first author right |
+| | `author_jacc`, `author_overlap` | Jaccard and number of shared surnames | separates papers with the same title but different authors |
+| | `entry_authors_missing`, `entry_authors_group` | E has no authors; the authors are only "et al." or an organisation | then no surname match is normal |
+| year | `year_gap` | the smallest \|year of E − year of R\| (R has an arXiv year and an S2 year) | the right paper is usually 0–1 year apart (preprint against published version) |
+| | `year_gap_signed` | the same, with its sign | *dropped: right and wrong pairs have the same mean* |
+| | `year_missing` | the year is missing | flag |
+| venue | `venue_sim` | 3-gram Jaccard between the journal/booktitle of E and the venue of R | secondary signal |
+| | `entry_is_preprint` | E is an arXiv preprint | *dropped: duplicates `entry_has_id`* |
+| | `entry_type_code` | code of `entry_type` | book/misc entries are rarely on arXiv |
+| context | `n_candidates` | number of candidates of the publication | |
+| | `title_rank`, `tfidf_rank`, `author_rank` | the rank of R among the candidates of E, for each similarity | a ranking problem needs **relative** comparisons: 0.6 can be the best in one publication and poor in another |
+| | `title_gap_best`, `title_margin_second` | the distance to the best candidate; the lead of the best candidate over the second | how certain the title evidence is |
+| | `title_is_best` | R has the most similar title | *dropped: duplicates `title_rank = 1`* |
 
-**Chống rò rỉ.** Không đặc trưng nào lấy từ nhãn, tên luật gán nhãn (`note`) hay `rule_hint`. Đặc trưng "context" chỉ so R với các ứng viên **khác của cùng entry**; lúc dự đoán thật cũng có đủ các ứng viên này. **External knowledge:** không dùng. Không tải model hay corpus ngoài; TF-IDF được fit trên title của chính corpus nhóm (theo giải đáp của thầy, như vậy không tính là external).
+**No leakage.** No feature comes from the labels, the names of the labelling rules (`note`) or `rule_hint`. The "context" features only compare R with the **other candidates of the same entry**, which are also all available at prediction time. **External knowledge:** none. No outside model or corpus is downloaded; TF-IDF is fitted on the titles of the group's own corpus (as the lecturer answered, this does not count as external).
 
-## 3. Phân tích trên train (`feature_report_train.csv`)
+## 3. Analysis on train (`feature_report_train.csv`)
 
-Tính trên 62.866 sample của tập train, không nhìn test.
+Computed on the 62,866 samples of the training set, without looking at test.
 
-| Đặc trưng | yes / no | MRR@5 khi dùng riêng |
+| Feature | yes / no | MRR@5 alone |
 |---|---|---|
-| title_jacc3 / title_jacc_word / title_tfidf | 0,99 / 0,05–0,08 | 0,993 / 0,993 / 0,992 |
-| title_exact / title_contain | 0,95–0,97 / 0,00 | 0,950 / 0,954 |
-| author_jacc / author_overlap | 0,92 / 0,03 · 5,7 / 0,3 | 0,944 / 0,894 |
-| first_author_match | 0,99 / 0,06 | 0,597 |
-| id_match / doi_match | 0,38 / 0,00 · 0,33 / 0,00 | 0,376 / 0,336 |
-| year_gap (năm) | 0,64 / 4,9 | 0,225 |
-| venue_sim | 0,40 / 0,09 (thiếu 20%) | 0,253 |
-| title_rank, title_gap_best, tfidf_rank, author_rank | | 0,992–0,993; author_rank 0,944 |
+| title_jacc3 / title_jacc_word / title_tfidf | 0.99 / 0.05–0.08 | 0.993 / 0.993 / 0.992 |
+| title_exact / title_contain | 0.95–0.97 / 0.00 | 0.950 / 0.954 |
+| author_jacc / author_overlap | 0.92 / 0.03 · 5.7 / 0.3 | 0.944 / 0.894 |
+| first_author_match | 0.99 / 0.06 | 0.597 |
+| id_match / doi_match | 0.38 / 0.00 · 0.33 / 0.00 | 0.376 / 0.336 |
+| year_gap (years) | 0.64 / 4.9 | 0.225 |
+| venue_sim | 0.40 / 0.09 (20% missing) | 0.253 |
+| title_rank, title_gap_best, tfidf_rank, author_rank | | 0.992–0.993; author_rank 0.944 |
 
-- "yes" / "no" là trung bình ở cặp đúng / cặp sai. Với đặc trưng 0/1, trung bình chính là tỉ lệ.
-- Đặc trưng cấp entry (cờ thiếu, `entry_has_*`, `entry_type_code`, `n_candidates`) giống nhau cho mọi ứng viên của cùng entry. Vì vậy MRR khi dùng riêng của chúng ≈ 0; chúng chỉ có ích khi kết hợp với đặc trưng khác.
-- **Tương quan > 0,9:**
-  - `entry_has_id` ≈ `entry_id_in_paper` (1,00) ≈ `entry_is_preprint` (0,98);
-  - `entry_has_doi` ≈ `entry_doi_in_paper` (0,94);
-  - ba độ giống title (0,92–0,96);
-  - `title_exact` ≈ `title_contain` ≈ `title_is_best` ≈ `title_margin_second` (0,95–0,98).
+- "yes" / "no" are the means over right / wrong pairs. For a 0/1 feature, the mean is the rate.
+- Entry-level features (missing flags, `entry_has_*`, `entry_type_code`, `n_candidates`) are the same for every candidate of an entry, so their MRR alone is ≈ 0; they only help in combination with other features.
+- **Correlations > 0.9:**
+  - `entry_has_id` ≈ `entry_id_in_paper` (1.00) ≈ `entry_is_preprint` (0.98);
+  - `entry_has_doi` ≈ `entry_doi_in_paper` (0.94);
+  - the three title similarities (0.92–0.96);
+  - `title_exact` ≈ `title_contain` ≈ `title_is_best` ≈ `title_margin_second` (0.95–0.98).
 
-## 4. Chọn đặc trưng: 31 → 26 → 17
+## 4. Feature selection: 31 → 26 → 17
 
-1. **Bỏ 5 đặc trưng trùng lặp hoặc vô ích** (mục 3): `entry_id_in_paper`, `entry_doi_in_paper`, `entry_is_preprint`, `year_gap_signed`, `title_is_best`. Còn **26** đặc trưng, gọi là bộ "full".
-2. **Ablation theo nhóm và permutation importance** (`src/m3/modeling/ablation.py`, cross-validation 5 fold theo bài trên train; xem `docs/m3_model.md` về lý do không dùng valid). Số đo chính là MRR@5 trên **3.119 ca khó** (cặp đúng không có title giống hệt) khi **che link**. Model đầy đủ đạt 0,9851.
+1. **5 redundant or useless features dropped** (section 3): `entry_id_in_paper`, `entry_doi_in_paper`, `entry_is_preprint`, `year_gap_signed`, `title_is_best`. **26** features remain, the "full" set.
+2. **Group ablation and permutation importance** (`src/m3/modeling/ablation.py`, 5-fold cross-validation by publication on train; see `docs/m3_model.md` for why valid is not used). The main measure is MRR@5 on the **3,119 hard cases** (the right pair does not have an identical title) with the **link features masked**. The full model reaches 0.9851.
 
-| Bỏ nhóm | MRR@5 | giảm |
+| Group removed | MRR@5 | drop |
 |---|---|---|
-| title + context (cùng mang thông tin về title) | 0,9548 | **−0,030** |
-| year | 0,9778 | −0,007 |
-| author | 0,9809 | −0,004 |
-| venue | 0,9842 | −0,001 |
-| chỉ title / chỉ context / link | ≈ 0,985 | ≈ 0 (nhóm còn lại bù vào; link đã bị che) |
+| title + context (both carry the title information) | 0.9548 | **−0.030** |
+| year | 0.9778 | −0.007 |
+| author | 0.9809 | −0.004 |
+| venue | 0.9842 | −0.001 |
+| title only / context only / link | ≈ 0.985 | ≈ 0 (the other group compensates; the link features are masked) |
 
-Permutation importance (khi che link, trên ca khó) xếp đầu: `year_gap`, `author_rank`, `venue_sim`, `author_jacc`, `first_author_match`, `title_gap_best`. Các đặc trưng title riêng lẻ có importance ≈ 0, vì chúng bù cho nhau.
+Permutation importance (link masked, hard cases) ranks first: `year_gap`, `author_rank`, `venue_sim`, `author_jacc`, `first_author_match`, `title_gap_best`. The individual title features have importance ≈ 0, because they compensate for one another.
 
-3. **Bộ "compact" (17 đặc trưng)**, model cuối dùng bộ này:
+3. **The "compact" set (17 features)**, used by the final model:
    - **link:** `id_match`, `doi_match`, `entry_has_id`, `entry_has_doi`
    - **title:** `title_jacc3`, `title_tfidf`, `entry_title_missing`
    - **author:** `first_author_match`, `author_jacc`, `author_overlap`, `entry_authors_missing`, `entry_authors_group`
@@ -96,12 +96,12 @@ Permutation importance (khi che link, trên ca khó) xếp đầu: `year_gap`, `
    - **venue:** `venue_sim`
    - **context:** `title_gap_best`, `author_rank`
 
-   CV cho thấy compact bằng full: ca khó khi không link 0,9849 so với 0,9851, chênh chưa tới 1 entry trên 3.119. Ít hơn 9 đặc trưng, dễ giải thích hơn, nên chọn compact.
+   Cross-validation shows the compact set equal to the full one: hard cases without link 0.9849 against 0.9851, less than 1 entry out of 3,119. With 9 features fewer and easier to explain, the compact set was chosen.
 
-Danh sách nằm trong `src/m3/modeling/pairs.py` (`DROPPED`, `COMPACT`). `features.parquet` vẫn giữ đủ 31 cột.
+The lists are in `src/m3/modeling/pairs.py` (`DROPPED`, `COMPACT`). `features.parquet` still keeps all 31 columns.
 
-## 5. Tóm tắt
+## 5. Summary
 
-- **Title là tín hiệu mạnh nhất:** riêng nó đã cho MRR khoảng 0,99 trên train.
-- **Tác giả và năm phân xử** các bài trùng tên hoặc gần trùng tên. Ví dụ "Generative adversarial networks" của Goodfellow và bài tổng quan cùng tên của Cohen; DDPM và Improved DDPM.
-- **Link gần như không bao giờ sai** nhưng chỉ có ở khoảng 1/3 số entry. Vì vậy khi train, link được che ở 50% entry để model không phụ thuộc vào nó (xem `docs/m3_model.md`).
+- **The title is the strongest signal:** on its own it gives an MRR of about 0.99 on train.
+- **Authors and year settle** papers with the same or nearly the same title, for example "Generative adversarial networks" by Goodfellow and the review of the same title by Cohen; DDPM and Improved DDPM.
+- **The link features are almost never wrong** but exist for only about 1/3 of the entries. During training they are therefore masked for 50% of the entries, so that the model does not depend on them (see `docs/m3_model.md`).

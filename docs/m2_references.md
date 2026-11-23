@@ -1,12 +1,12 @@
 # Milestone 2: Reference Extraction & BibTeX Standardization
 
-Tài liệu cho phần việc của Member 3: trích xuất tham khảo từ `\bibitem` và
-file `.bib`, chuẩn hóa thành BibTeX, khử trùng lặp xuyên phiên bản và đổi
-tên `\cite{}`. Kết quả cuối cùng đi vào bảng `bibtex`.
+Documentation of Member 3's work: extracting the references from `\bibitem` and
+`.bib` files, standardising them as BibTeX, deduplicating them across versions and
+renaming the `\cite{}` keys. The final result goes into the `bibtex` table.
 
-## 1. Các file
+## 1. Files
 
-Toàn bộ code của Member 3 nằm trong thư mục con `src/reference_parser/`:
+All of Member 3's code is in the subfolder `src/reference_parser/`:
 
 ```
 src/
@@ -22,212 +22,212 @@ src/
     └── reference_stats.py
 ```
 
-| File                    | Vai trò                                                                                                                                                                             | Hàm pipeline gọi         |
-| :---------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------- |
-| `ref_text.py`         | Helper dùng chung: đọc nhóm `{...}`/`[...]`, bỏ comment `%`, LaTeX → Unicode (`{\"a}` → ä, `\&` → &), chuẩn hóa DOI / arXiv id / URL, khóa so sánh tiêu đề | –                         |
-| `bibitem_parser.py`   | Tìm tham khảo của **một version**: `\bibitem` trong `thebibliography`, amsrefs `\bib{}`, entry của `.bib`                                                         | `parse(text, bib_files)` |
-| `bibtex_converter.py` | Entry → dòng bảng `bibtex` (title, authors, year, doi, journal, url, entry_type)                                                                                                | `convert(entries)`       |
-| `dedup_bibtex.py`     | Gộp tham khảo trùng xuyên các version, union field, chọn canonical key, sinh map đổi tên                                                                                    | `dedup(by_version)`      |
-| `citation_updater.py` | Đổi key trong mọi lệnh `\cite`-like theo map                                                                                                                                   | `update(text, rename)`   |
-| `reference_stats.py`  | Chạy riêng phần tham khảo trên corpus, ghi log và số liệu cho báo cáo                                                                                                      | CLI                        |
-| `tests/m2/test_references.py` | 22 test offline (gồm 1 test chạy cả `pipeline_m2`)                                                                                                                              | –                         |
+| File                    | Role                                                                                                                                                     | Function called by the pipeline |
+| :---------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------ |
+| `ref_text.py`         | Shared helpers: reading `{...}`/`[...]` groups, removing `%` comments, LaTeX → Unicode (`{\"a}` → ä, `\&` → &), normalising DOI / arXiv id / URL, the title comparison key | –                                |
+| `bibitem_parser.py`   | Finds the references of **one version**: `\bibitem` in `thebibliography`, amsrefs `\bib{}`, `.bib` entries                                                | `parse(text, bib_files)`        |
+| `bibtex_converter.py` | Entry → row of the `bibtex` table (title, authors, year, doi, journal, url, entry_type)                                                                | `convert(entries)`              |
+| `dedup_bibtex.py`     | Merges duplicate references across versions, unions the fields, chooses the canonical key, builds the rename map                                       | `dedup(by_version)`             |
+| `citation_updater.py` | Renames the keys in every `\cite`-like command according to the map                                                                                     | `update(text, rename)`          |
+| `reference_stats.py`  | Runs the reference steps alone on the corpus and writes the logs and the numbers for the report                                                         | CLI                             |
+| `tests/m2/test_references.py` | 26 offline tests (including tests that run the whole `pipeline_m2`)                                                                              | –                                |
 
-Các module chỉ dùng thư viện chuẩn của Python (không cần cài thêm gói nào).
-Chúng theo đúng contract trong `src/m2_contract.py` (branch `quan-m2-member1`).
-Để pipeline tìm được module trong thư mục con, có 2 chỉnh sửa nhỏ ở file của Member 1:
+The modules use only the Python standard library (no extra package to install).
+They follow the contract of `src/m2_contract.py` (branch `quan-m2-member1`).
+For the pipeline to find modules in a subfolder, two small changes were made to Member 1's files:
 
-- `m2_contract.py`: thêm `PACKAGES = ("", "reference_parser")`; `load()` tìm mỗi module
-  ở `src/` trước, rồi trong `src/reference_parser/`.
-- `pipeline_m2.py` (`code_version`): tính hash cả các file trong `src/reference_parser/`,
-  để sửa code Member 3 thì lần chạy sau parse lại.
+- `m2_contract.py`: `PACKAGES = ("", "reference_parser")` was added; `load()` looks for each module
+  in `src/` first, then in `src/reference_parser/`.
+- `pipeline_m2.py` (`code_version`): the hash also covers the files of `src/reference_parser/`,
+  so that a change to Member 3's code makes the next run parse again.
 
-## 2. Vị trí trong pipeline (`pipeline_m2.py`)
+## 2. Place in the pipeline (`pipeline_m2.py`)
 
 ```
-gatherer.gather (M1)                       mỗi version: text đã gộp \input, đã bỏ comment
+gatherer.gather (M1)                       each version: text with \input merged, comments removed
    │
-   ├─ bibitem_parser.parse(text, bib_files)   ← đọc trên text THÔ, trước khi bỏ thebibliography
+   ├─ bibitem_parser.parse(text, bib_files)   ← reads the RAW text, before thebibliography is removed
    ├─ bibtex_converter.convert(entries)
-   │        (lặp cho mọi version)
-   ├─ dedup_bibtex.dedup(by_version)  →  rows (bảng bibtex) + rename (cite_rename_map.json)
+   │        (repeated for every version)
+   ├─ dedup_bibtex.dedup(by_version)  →  rows (bibtex table) + rename (cite_rename_map.json)
    │
    ├─ cleaner → normalizer (M2) → citation_updater.update(text, rename)
-   └─ hierarchy.build (M1) + Registry (M4)   câu chỉ khác citation key giờ trùng nhau → 1 element_id
+   └─ hierarchy.build (M1) + Registry (M4)   sentences differing only by a citation key are now equal → 1 element_id
 ```
 
-Đầu ra mỗi bài nằm ở `corpus/<yymm-id>/parsed/bibtex.json` và
-`parsed/cite_rename_map.json`; `pipeline_m2.py` gom thành bảng Parquet
+The output of each publication is in `corpus/<yymm-id>/parsed/bibtex.json` and
+`parsed/cite_rename_map.json`; `pipeline_m2.py` collects them into the Parquet table
 `tables/bibtex/`.
 
-## 3. Trích xuất (`bibitem_parser.py`)
+## 3. Extraction (`bibitem_parser.py`)
 
-- **`\bibitem[label]{key} text`**: đọc trong `thebibliography` (và các môi
-  trường `references`, `biblist`, `bibdiv`); nếu có `\bibitem` nằm ngoài các
-  môi trường này thì quét cả văn bản. Label có ngoặc lồng (`[{Vaswani et~al.(2017)}]`)
-  vẫn đọc đúng. Dòng comment (`% \bibitem{x}`) bị bỏ, `\%` và `%` trong `\url{}` giữ nguyên.
-- **Markup REVTeX/natbib** `\bibinfo{title}{...}`, `\bibfield{author}{...}`
-  được đọc thẳng thành field.
+- **`\bibitem[label]{key} text`**: read inside `thebibliography` (and the
+  environments `references`, `biblist`, `bibdiv`); when a `\bibitem` lies outside these
+  environments, the whole text is scanned. A label with nested brackets (`[{Vaswani et~al.(2017)}]`)
+  is still read correctly. Comment lines (`% \bibitem{x}`) are skipped; `\%` and `%` inside `\url{}` are kept.
+- **REVTeX/natbib markup** `\bibinfo{title}{...}`, `\bibfield{author}{...}`
+  is read directly as fields.
 - **amsrefs** `\bib{key}{type}{author={...}, title={...}}`.
-- **`.bib`**: parser tự viết, hỗ trợ `{...}` lồng, `"..."`, số trần,
-  `@string` + nối `#`, tên tháng, `@comment`/`@preamble`, kế thừa `crossref`.
-  Entry hỏng bị bỏ qua (có log) và đọc tiếp entry sau.
-- **Chỉ giữ entry được trích dẫn** (giống BibTeX): key nằm trong `\cite`,
-  `\citep`, `\citet*`, `\parencite`, `\nocite`, ... `\nocite{*}` hoặc tài liệu
-  không có `\cite` nào → giữ hết. Số entry bị bỏ ghi vào log (`bib_uncited_dropped`).
-- **File `.bbl`**: thầy trả lời trong Q&A là không được để mất tham khảo của bài
-  chỉ có `.bbl`. `gatherer` đọc `.bbl` khi `\input{x.bbl}`, hoặc khi `\bibliography{x}`
-  không có `x.bib` (tìm `<root>.bbl`, rồi `x.bbl`, rồi file `.bbl` duy nhất trong thư mục).
-  `bbl_converter.py` tách `thebibliography` (đưa vào text để đọc như `\bibitem`) và
-  chuyển `.bbl` của biblatex (`\entry`, `\field`) ngược về BibTeX. Nếu có cả `.bib`
-  thì dùng `.bib`. Corpus đã crawl: chạy `src/fetch_bbl.py` trước `pipeline_m2.py`
-  (mục 9). Bài không có `.bbl` trong nguồn vẫn được ghi lại (`gathering.json`,
-  `logs/bbl_log.csv`, metric `versions_references_in_missing_bbl`).
-- **File `.bib` fallback**: khi tài liệu không khai báo nguồn nào, `gatherer`
-  đưa các `.bib` trong thư mục (`g.bib_fallback`); `reference_stats.py` ghi
-  log mỗi lần dùng fallback.
-- Cùng một key có cả `\bibitem` và entry `.bib` → gộp thành một (field của
-  `.bib` ưu tiên, phần thiếu lấy từ `\bibitem`). Key định nghĩa 2 lần trong
-  một version → giữ định nghĩa đầu (như BibTeX).
+- **`.bib`**: a parser of our own, supporting nested `{...}`, `"..."`, bare numbers,
+  `@string` + `#` concatenation, month names, `@comment`/`@preamble`, `crossref` inheritance.
+  A broken entry is skipped (with a log line) and reading goes on with the next one.
+- **Only cited entries are kept** (as BibTeX does): keys found in `\cite`,
+  `\citep`, `\citet*`, `\parencite`, `\nocite`, ... With `\nocite{*}`, or a document
+  without any `\cite`, everything is kept. The number of dropped entries is logged (`bib_uncited_dropped`).
+- **`.bbl` files**: the lecturer answered in the Q&A that the references of a publication
+  that only has a `.bbl` must not be lost. `gatherer` reads the `.bbl` on `\input{x.bbl}`, or when `\bibliography{x}`
+  has no `x.bib` (looking for `<root>.bbl`, then `x.bbl`, then the only `.bbl` file of the folder).
+  `bbl_converter.py` extracts `thebibliography` (put into the text to be read like `\bibitem`) and
+  converts a biblatex `.bbl` (`\entry`, `\field`) back to BibTeX. When there is also a `.bib`,
+  the `.bib` is used. For a corpus already crawled, run `src/fetch_bbl.py` before `pipeline_m2.py`
+  (section 9). A publication whose source has no `.bbl` is still recorded (`gathering.json`,
+  `logs/bbl_log.csv`, the metric `versions_references_in_missing_bbl`).
+- **`.bib` fallback**: when the document declares no source, `gatherer`
+  passes the `.bib` files of the folder (`g.bib_fallback`); `reference_stats.py` logs
+  each use of the fallback.
+- The same key with both a `\bibitem` and a `.bib` entry → merged into one (the `.bib`
+  fields win, the missing ones come from the `\bibitem`). A key defined twice in
+  one version → the first definition is kept (as BibTeX does).
 
-## 4. Chuẩn hóa BibTeX (`bibtex_converter.py`)
+## 4. BibTeX standardisation (`bibtex_converter.py`)
 
-| Cột             | Cách lấy                                                                                                                                                                                                                                                                                                                                                                            |
-| :--------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `citation_key` | key gốc (không rỗng)                                                                                                                                                                                                                                                                                                                                                               |
-| `entry_type`   | type của `.bib` (alias biblatex như `online`, `report`, `thesis` được quy về chuẩn); với `\bibitem` đoán theo từ khóa: Proceedings/Conference/NeurIPS... → `inproceedings`; Journal/Trans./Lett./`21(3)`... → `article`; thesis → `phdthesis`/`mastersthesis`; Technical report → `techreport`; nhà xuất bản → `book`; còn lại `misc` |
-| `title`        | bỏ ngoặc nhọn, accent → Unicode, bỏ dấu câu bao quanh                                                                                                                                                                                                                                                                                                                          |
-| `authors`      | list `"Họ, Tên"`: tách `and` ở mức ngoài ngoặc; hỗ trợ `Last, First`, `First von Last`, `{Tên tổ chức}`, bỏ `others`/`et al.`                                                                                                                                                                                                                              |
-| `year`         | int 1600 → năm sau; `.bib`: `year` hoặc `date`; không lấy năm từ phần đầu mã arXiv `1805.02656`                                                                                                                                                                                                                                                                                                                               |
-| `doi`          | regex `10.\d{4,9}/...`, bỏ tiền tố `https://doi.org/`, `doi:`, viết thường                                                                                                                                                                                                                                                                                                |
-| `journal`      | `journal` / `journaltitle` / `booktitle` (bài trong kỷ yếu) / `series`; preprint arXiv → `arXiv preprint arXiv:<id>`                                                                                                                                                                                                                                                    |
-| `url`          | `https://arxiv.org/abs/<id>` (từ `eprint` có hoặc không có `archivePrefix`, DOI `10.48550/arXiv.*`, `journal`, `url`, `note`; id cũ bỏ phân lớp: `math.AG/0101001` → `math/0101001`) để không mất arXiv id vì bảng không có cột eprint; nếu không có: `url`, rồi `https://doi.org/<doi>`                                                                                                                                                                                                                                                                               |
+| Column           | How it is obtained                                                                                                                                                                                                                                                                                                                                                                   |
+| :--------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `citation_key` | the original key (never empty)                                                                                                                                                                                                                                                                                                                                                       |
+| `entry_type`   | the `.bib` type (biblatex aliases such as `online`, `report`, `thesis` are mapped to the standard types); for `\bibitem` it is guessed from keywords: Proceedings/Conference/NeurIPS... → `inproceedings`; Journal/Trans./Lett./`21(3)`... → `article`; thesis → `phdthesis`/`mastersthesis`; Technical report → `techreport`; a publisher → `book`; otherwise `misc` |
+| `title`        | braces removed, accents → Unicode, surrounding punctuation removed                                                                                                                                                                                                                                                                                                                   |
+| `authors`      | a list of `"Surname, Given name"`: split on `and` outside braces; supports `Last, First`, `First von Last`, `{Organisation name}`; `others`/`et al.` removed                                                                                                                                                                                                                       |
+| `year`         | an integer from 1600 to next year; `.bib`: `year` or `date`; the year is never taken from the start of an arXiv ID such as `1805.02656`                                                                                                                                                                                                                                             |
+| `doi`          | regex `10.\d{4,9}/...`, prefixes `https://doi.org/`, `doi:` removed, lower case                                                                                                                                                                                                                                                                                                      |
+| `journal`      | `journal` / `journaltitle` / `booktitle` (papers in proceedings) / `series`; an arXiv preprint → `arXiv preprint arXiv:<id>`                                                                                                                                                                                                                                                       |
+| `url`          | `https://arxiv.org/abs/<id>` (from `eprint` with or without `archivePrefix`, the DOI `10.48550/arXiv.*`, `journal`, `url`, `note`; old IDs lose their subject class: `math.AG/0101001` → `math/0101001`), so that the arXiv id is not lost, since the table has no eprint column; otherwise `url`, then `https://doi.org/<doi>`                                                     |
 
-**`\bibitem` là văn bản tự do**, đọc theo thứ tự:
+**A `\bibitem` is free text**, read in this order:
 
-1. DOI, URL, arXiv id bằng regex (`\doi{}`, `\url{}`, `\href{}`, link trần).
-2. Năm: label natbib `(2017)` → `(2017)` sau tên tác giả (APA) → năm cuối cùng ngoài link/định danh.
-3. Tách khối tác giả / tiêu đề / nơi đăng:
-   - có `\newblock` (file `.bbl` do BibTeX sinh) → mỗi khối một phần;
-   - tiêu đề trong ngoặc kép ...'' `` (IEEE);
-   - `Tác giả (2017). Tiêu đề. Nơi đăng` (APA);
-   - `Last, F., Last, F. Tiêu đề.` / `F. Last, F. Last. Tiêu đề.` / Vancouver `Smith J, Doe AB. Tiêu đề.`:
-     cắt ở dấu chấm kết thúc câu, **không** cắt sau chữ viết tắt tên (`A.`, `J.-P.`) hay
-     viết tắt thường gặp (`et al.`, `Proc.`, `Vol.`, `Phys.`...);
-   - Springer `Last, F., Last, F.: Tiêu đề. Nơi đăng`: cắt ở dấu `:` ngay sau chữ viết tắt tên;
-   - toán, vật lý `F. Last, F. Last, Tiêu đề, J. Math. 12 (2000)`: tên viết tắt đứng trước, nơi đăng là
-     cụm từ viết hoa ngay trước số tập và năm;
-   - thiên văn `Last, F., Last, F. 2005, Nature, 435, 629`: năm ngay sau tác giả, thường không có tiêu đề
-     (khi đó `title` để trống, vì nguồn không ghi);
-   - kiểu vật lý không có tiêu đề `A. Einstein, Ann. Phys. 17, 891 (1905)` → chỉ có tác giả + journal.
-4. Macro do tác giả tự định nghĩa trong tài liệu (`\article{...}{...}`, `\jhep`) và macro tên tạp chí của
-   các class thiên văn (`\apj`, `\mnras`...) được thay bằng nội dung trước khi đọc; macro lập trình TeX
-   (`\ifx`, `\csname`...) và các lệnh `\doi`, `\url` không bị thay.
-5. Phần in nghiêng (`\emph`, `{\em ...}`) trong nơi đăng được lấy làm `journal`.
+1. DOI, URL, arXiv id by regex (`\doi{}`, `\url{}`, `\href{}`, bare links).
+2. Year: the natbib label `(2017)` → `(2017)` after the authors (APA) → the last year outside links/identifiers.
+3. Splitting into the author / title / venue blocks:
+   - with `\newblock` (a `.bbl` produced by BibTeX) → one part per block;
+   - a title in quotes ``...'' (IEEE);
+   - `Authors (2017). Title. Venue` (APA);
+   - `Last, F., Last, F. Title.` / `F. Last, F. Last. Title.` / Vancouver `Smith J, Doe AB. Title.`:
+     cut at the full stop that ends a sentence, **not** after name initials (`A.`, `J.-P.`) or
+     common abbreviations (`et al.`, `Proc.`, `Vol.`, `Phys.`...);
+   - Springer `Last, F., Last, F.: Title. Venue`: cut at the `:` right after the name initials;
+   - mathematics, physics `F. Last, F. Last, Title, J. Math. 12 (2000)`: initials first, the venue is the
+     capitalised phrase just before the volume number and the year;
+   - astronomy `Last, F., Last, F. 2005, Nature, 435, 629`: the year right after the authors, usually no title
+     (then `title` stays empty, since the source does not give one);
+   - physics without a title `A. Einstein, Ann. Phys. 17, 891 (1905)` → authors + journal only.
+4. Macros defined by the authors in the document (`\article{...}{...}`, `\jhep`) and the journal-name macros of
+   the astronomy classes (`\apj`, `\mnras`...) are replaced by their content before reading; TeX programming macros
+   (`\ifx`, `\csname`...) and the commands `\doi`, `\url` are not replaced.
+5. The italic part (`\emph`, `{\em ...}`) of the venue is taken as `journal`.
 
-Một tham khảo không đọc được không làm hỏng bài: nó thành dòng `misc` chỉ có key (có log).
+A reference that cannot be read does not break the publication: it becomes a `misc` row with its key only (logged).
 
-## 5. Khử trùng lặp (`dedup_bibtex.py`)
+## 5. Deduplication (`dedup_bibtex.py`)
 
-Hai dòng (cùng version hoặc khác version) được coi là **một tham khảo** khi:
+Two rows (of the same version or of different versions) are treated as **one reference** when:
 
-1. **Cùng citation key**, trừ khi mâu thuẫn rõ (DOI khác nhau, arXiv id khác nhau, hoặc
-   tiêu đề khác hẳn). Ví dụ `\bibitem{1}` ở v1 và v2 trỏ tới hai bài khác nhau → **không** gộp.
-2. **Cùng DOI**, **cùng arXiv id**, hoặc **cùng URL** (trừ khi tiêu đề khác hẳn).
-3. **Cùng tiêu đề** sau chuẩn hóa (viết thường, bỏ dấu và ký tự đặc biệt; ≥ 3 từ
-   hoặc ≥ 15 ký tự), năm không lệch quá 1 và họ tác giả đầu không khác nhau.
-4. **Tiêu đề gần giống** (difflib ≥ 0.92), cùng năm hoặc cùng họ tác giả đầu, và cùng số trong tiêu đề
-   (`... II` khác `... I`, `Llama 2` khác `Llama 3`). Chỉ so
-   các dòng chung một từ hiếm trong tiêu đề, nên vẫn nhanh với hàng nghìn tham khảo.
+1. **They have the same citation key**, unless they clearly conflict (different DOIs, different arXiv ids, or
+   completely different titles). Example: `\bibitem{1}` in v1 and v2 pointing to two different papers → **not** merged.
+2. **They have the same DOI**, **the same arXiv id**, or **the same URL** (unless the titles are completely different).
+3. **They have the same title** after normalisation (lower case, accents and special characters removed; ≥ 3 words
+   or ≥ 15 characters), years at most 1 apart and no different first-author surname.
+4. **Their titles are nearly the same** (difflib ≥ 0.92), with the same year or the same first-author surname, and the same numbers in the title
+   (`... II` differs from `... I`, `Llama 2` from `Llama 3`). Only rows sharing a rare
+   title word are compared, so it stays fast with thousands of references.
 
-Các luật gộp bắc cầu (union-find).
+The merge rules are transitive (union-find).
 
-**Canonical key**: key xuất hiện ở nhiều version nhất; hòa thì lấy key của
-version mới nhất. Ví dụ của đề: `vaswani2017` (v1) + `vit_transformer` (v2, v3)
-→ `vit_transformer`, map `{"vaswani2017": "vit_transformer"}`. Key là duy nhất
-trong một bài (không phân biệt hoa thường); nếu key đã bị nhóm khác dùng thì
-thêm hậu tố `_2`, `_3`.
+**Canonical key**: the key present in the most versions; on a tie, the key of the
+latest version. The statement's example: `vaswani2017` (v1) + `vit_transformer` (v2, v3)
+→ `vit_transformer`, map `{"vaswani2017": "vit_transformer"}`. Keys are unique
+within a publication (case-insensitive); a key already used by another group
+gets the suffix `_2`, `_3`.
 
-**Union field**: mỗi field lấy giá trị tốt nhất trong nhóm, không bỏ thông tin:
-ưu tiên nguồn có cấu trúc (`.bib`, amsrefs, `\bibinfo`) hơn đoán từ `\bibitem`,
-rồi giá trị được nhiều dòng đồng ý nhất, rồi version mới nhất, rồi giá trị dài nhất.
-`entry_type = misc` chỉ khi không dòng nào cho loại cụ thể hơn.
-Ví dụ: v1 {title, author, year} + v2 {doi} + v3 {mất year} → {title, author, year, doi}.
+**Field union**: each field takes the best value of the group, without losing information:
+structured sources (`.bib`, amsrefs, `\bibinfo`) win over values guessed from `\bibitem`,
+then the value most rows agree on, then the latest version, then the longest value.
+`entry_type = misc` only when no row gives a more specific type.
+Example: v1 {title, author, year} + v2 {doi} + v3 {year missing} → {title, author, year, doi}.
 
-**Giới hạn**: map đổi tên dùng chung cho mọi version (theo contract của
-pipeline). Khi cùng một key trỏ tới hai bài khác nhau ở hai version, `\cite`
-của key đó **không** bị đổi (để không trỏ sai), nhóm thứ hai nhận key có hậu
-tố; số trường hợp này ghi ở cột `key_conflicts`.
+**Limit**: the rename map is shared by every version (the pipeline's
+contract). When the same key points to two different papers in two versions, the `\cite`
+of that key is **not** renamed (so that it never points to the wrong paper), and the second group gets
+a suffixed key; these cases are counted in the column `key_conflicts`.
 
-## 6. Đổi tên `\cite` (`citation_updater.py`)
+## 6. Renaming `\cite` (`citation_updater.py`)
 
-Đổi key trong `\cite`, `\citep`, `\citet*`, `\citealp`, `\citeauthor`,
+Renames the keys in `\cite`, `\citep`, `\citet*`, `\citealp`, `\citeauthor`,
 `\citeyear`, `\nocite`, `\Cite...`, `\parencite`, `\textcite`, `\autocite`,
-`\footcite`, multicite `\cites[..]{a}[..]{b}`; giữ nguyên lệnh, ghi chú
-`[see][p.~3]` và thứ tự key. Key bị trùng sau khi đổi (`\cite{a,b}` mà a, b là
-một bài) chỉ giữ một lần. Tra key chính xác trước, rồi không phân biệt hoa
-thường nếu không mơ hồ. `\ref`, `\label` không bị đụng tới.
+`\footcite`, multicite `\cites[..]{a}[..]{b}`; the command, the notes
+`[see][p.~3]` and the order of the keys are kept. A key duplicated by the renaming (`\cite{a,b}` where a and b are
+the same paper) is kept once. Keys are looked up exactly first, then case-insensitively
+when that is unambiguous. `\ref` and `\label` are never touched.
 
-## 7. Log
+## 7. Logs
 
-Khi chạy trong `pipeline_m2.py`, module ghi qua logger `m2.references`
-(cảnh báo như entry `.bib` hỏng in ra stderr). Để có log đầy đủ và số liệu
-cho báo cáo, chạy:
+Inside `pipeline_m2.py`, the modules write through the logger `m2.references`
+(warnings such as a broken `.bib` entry go to stderr). For the full logs and the numbers
+of the report, run:
 
 ```bash
-python src/reference_parser/reference_stats.py --data-dir data --test       # 5 bài đầu
-python src/reference_parser/reference_stats.py --data-dir data              # toàn bộ
-python src/reference_parser/reference_stats.py --data-dir data --ids 2604.05535 --show   # xem từng dòng BibTeX và map
+python src/reference_parser/reference_stats.py --data-dir data --test       # the first 5 publications
+python src/reference_parser/reference_stats.py --data-dir data              # everything
+python src/reference_parser/reference_stats.py --data-dir data --ids 2604.05535 --show   # every BibTeX row and the map
 ```
 
-Ghi vào `data/logs/`:
+Written to `data/logs/`:
 
-| File                       | Nội dung                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| :------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `reference_log.csv`      | 1 dòng / bài / lần chạy: số `\bibitem`, entry `.bib` (tổng / dùng / bỏ vì không được cite), version dùng `.bib` fallback, key được cite nhưng không tìm thấy, **số dòng trước và sau dedup**, số key đổi tên, `key_conflicts`, số lần gộp theo từng luật (key / doi / arxiv / url / title / fuzzy title), tỉ lệ có title/authors/year/doi/journal/url, số `misc`, thời gian, lỗi |
-| `reference_versions.csv` | 1 dòng / version: trạng thái gather, file `.bib` dùng, có fallback không, có `thebibliography` không, các số đếm                                                                                                                                                                                                                                                                                                          |
-| `reference_m2.log`       | cảnh báo và ghi chú của module, có mã bài `[2604.05535]`                                                                                                                                                                                                                                                                                                                                                                        |
+| File                       | Content                                                                                                                                                                                                                                                                                                                                                                                             |
+| :------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reference_log.csv`      | 1 row / publication / run: the number of `\bibitem`s, `.bib` entries (total / used / dropped as uncited), versions using the `.bib` fallback, keys cited but not found, **rows before and after deduplication**, renamed keys, `key_conflicts`, the merges per rule (key / doi / arxiv / url / title / fuzzy title), the share with title/authors/year/doi/journal/url, `misc` rows, time, errors |
+| `reference_versions.csv` | 1 row / version: gather status, `.bib` files used, whether the fallback was used, whether there is a `thebibliography`, the counts                                                                                                                                                                                                                                                                 |
+| `reference_m2.log`       | the modules' warnings and notes, with the publication ID `[2604.05535]`                                                                                                                                                                                                                                                                                                                            |
 
-Cuối lần chạy in tóm tắt: tổng entry trước → sau dedup (% giảm), số key đổi
-tên, tỉ lệ field tìm được. Member 4 / Member 5 dùng `reference_log.csv` cho
-phần thống kê "entry counts before and after deduplication".
+At the end of a run, a summary is printed: total entries before → after deduplication (% reduction), renamed keys,
+the share of fields found. Members 4 and 5 use `reference_log.csv` for the statistics
+"entry counts before and after deduplication".
 
-## 8. Kiểm thử
+## 8. Tests
 
 ```bash
-python src/tests/m2/test_references.py      # 22 test, offline, không cần pyarrow
-python src/tests/m2/test_gather_hierarchy.py      # test của Member 1 vẫn chạy được khi có module Member 3
+python src/tests/m2/test_references.py      # 26 tests, offline, no pyarrow needed
+python src/tests/m2/test_gather_hierarchy.py      # Member 1's tests still pass with Member 3's modules present
 ```
 
-Có test cho: LaTeX → text, DOI/arXiv, `.bib` (@string, #, crossref, comment,
-lọc entry không được cite, `\nocite{*}`), `\bibitem` các kiểu (natbib `.bbl`,
-IEEE, APA, Vancouver, vật lý, sách), `\bibinfo`, amsrefs, ví dụ 3 version của đề,
-gộp theo DOI/arXiv, key tái sử dụng cho bài khác, tiêu đề gần giống, ưu tiên
-nguồn có cấu trúc, đổi tên `\cite` mọi biến thể, và một bài 2 version chạy qua
-`pipeline_m2.py` (câu ở v1 và v2 chỉ khác key → thành 1 element).
+There are tests for: LaTeX → text, DOI/arXiv, `.bib` (@string, #, crossref, comments,
+filtering of uncited entries, `\nocite{*}`), the `\bibitem` styles (natbib `.bbl`,
+IEEE, APA, Vancouver, physics, books), `\bibinfo`, amsrefs, the statement's 3-version example,
+merging by DOI/arXiv, a key reused for another paper, nearly identical titles, priority of
+structured sources, renaming every `\cite` variant, and a 2-version publication run through
+`pipeline_m2.py` (sentences of v1 and v2 differing only by the key → 1 element).
 
-Hiệu năng (đo trong sandbox): 1 version với 3000 entry `.bib` + 300 `\bibitem`,
-dedup 4 version (5200 dòng) mất khoảng 0.7 giây.
+Performance (measured in a sandbox): 1 version with 3,000 `.bib` entries + 300 `\bibitem`s,
+and the deduplication of 4 versions (5,200 rows), take about 0.7 seconds.
 
-## 9. Bổ sung `.bbl` cho corpus đã crawl (`fetch_bbl.py`)
+## 9. Adding `.bbl` files to a corpus already crawled (`fetch_bbl.py`)
 
-Lần crawl đầu chỉ giữ `.tex` và `.bib`. Script này chỉ tải lại các version có trích dẫn
-mà không có nguồn tham khảo nào, rồi chép riêng file `.bbl` vào thư mục version và cập
-nhật `kept_files`, `kept_bytes` trong `versions.json`. Không file nào bị ghi đè.
+The first crawl kept only `.tex` and `.bib`. This script downloads again only the versions that have citations
+but no source of references, copies just the `.bbl` file into the version folder and updates
+`kept_files`, `kept_bytes` in `versions.json`. No file is overwritten.
 
 ```bash
-python src/fetch_bbl.py --data-dir data --dry-run    # đếm số version, không gửi request
+python src/fetch_bbl.py --data-dir data --dry-run    # counts the versions, sends no request
 python src/fetch_bbl.py --data-dir data
 python src/pipeline_m2.py --data-dir data --force
 ```
 
-Chạy lại được: version đã có `.bbl` không bị chọn nữa, version mà nguồn không có `.bbl`
-(`logs/bbl_log.csv`) chỉ được hỏi lại với `--retry-no-bbl`.
+It can be run again: versions that already have a `.bbl` are not selected any more, and versions whose source has no `.bbl`
+(`logs/bbl_log.csv`) are asked again only with `--retry-no-bbl`.
 
 
 ## M2 full-fix review (2026-11)
 
-- `gatherer.py` phân biệt `.bbl` với `.bib`: file `.bbl` được đưa qua `read_bbl()`, không qua bộ parse BibTeX của `.bib`.
-- `bbl_converter.py` nhận thêm amsrefs (`\bib{key}{type}{...}`) và harvard (`\harvarditem`). Dạng không nhận diện phải được ghi nhận để kiểm tra thủ công, không tự tạo citation key.
-- `dedup_bibtex.py` không dùng tiêu đề không đặc trưng như `(ATLAS Collaboration)`, `accessed...` hoặc chuỗi số làm căn cứ hợp nhất. Tiêu đề có phiên bản mô hình khác nhau (`GPT-5.4` / `GPT-4 Turbo` / `GPT-3.5`) không được gộp chỉ vì khóa giống nhau. Trường hợp cùng citation key bị dùng cho hai tài liệu khác nhau vẫn cần review thủ công, vì không thể suy ra đổi tên `\cite` toàn cục một cách đáng tin cậy.
-- `bibtex_converter.py` mở rộng một số macro tên tạp chí thiên văn trong trường `journal` và nhận diện năm từ 1600 đến năm hiện hành+1, tránh nhận nhầm đầu mã arXiv thành năm.
-- Xem `src/tests/m2/test_full_fixes.py` để tái lập regression tests.
+- `gatherer.py` tells `.bbl` from `.bib`: a `.bbl` file goes through `read_bbl()`, not through the BibTeX parser of `.bib` files.
+- `bbl_converter.py` also accepts amsrefs (`\bib{key}{type}{...}`) and harvard (`\harvarditem`). Unrecognised forms must be recorded for manual review, never turned into invented citation keys.
+- `dedup_bibtex.py` does not use non-distinctive titles such as `(ATLAS Collaboration)`, `accessed...` or strings of numbers as grounds for merging. Titles with different model versions (`GPT-5.4` / `GPT-4 Turbo` / `GPT-3.5`) are not merged just because their keys look alike. The same citation key used for two different documents still needs manual review, since a global `\cite` rename cannot be inferred reliably.
+- `bibtex_converter.py` expands some astronomy journal-name macros in the `journal` field and accepts years from 1600 to the current year + 1, so the start of an arXiv ID is not taken for a year.
+- See `src/tests/m2/test_full_fixes.py` to reproduce the regression tests.
