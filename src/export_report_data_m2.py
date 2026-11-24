@@ -165,12 +165,12 @@ def tree_shape(edges: list, kinds: dict[str, str]) -> dict[int, dict]:
 
 
 PROBLEM_KINDS = [
-    (re.compile(r"milestone 1 status", re.I), "Không có TeX (theo M1)"),
-    (re.compile(r"missing|not found|không có", re.I), "File được nhắc tới nhưng không có"),
-    (re.compile(r"root|documentclass|begin\{document\}", re.I), "Không xác định được file gốc"),
-    (re.compile(r"cycle|recurs|loop", re.I), "Vòng lặp \\input"),
-    (re.compile(r"encod|decode|utf", re.I), "Lỗi mã hoá ký tự"),
-    (re.compile(r"endinput|truncat", re.I), "Bị cắt bởi \\endinput"),
+    (re.compile(r"milestone 1 status", re.I), "No TeX (Milestone 1)"),
+    (re.compile(r"missing|not found|không có", re.I), "Included file missing from the source"),
+    (re.compile(r"root|documentclass|begin\{document\}", re.I), "Root file not determined"),
+    (re.compile(r"cycle|recurs|loop", re.I), "\\input cycle"),
+    (re.compile(r"encod|decode|utf", re.I), "Character encoding error"),
+    (re.compile(r"endinput|truncat", re.I), "Cut by \\endinput"),
 ]
 
 
@@ -178,7 +178,7 @@ def problem_kind(text: str) -> str:
     for pattern, label in PROBLEM_KINDS:
         if pattern.search(text):
             return label
-    return "Khác"
+    return "Other"
 
 
 class Collector:
