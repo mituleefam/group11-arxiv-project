@@ -1,6 +1,6 @@
 """Milestone 3, modelling - which features matter, measured by cross-validation on train (never on test).
 
-    python src/m3/modeling/ablation.py --work WORK [--folds 5] [--repeats 3]
+    python src/m3/modeling/ablation.py --work WORK [--folds 5] [--repeats 3] [--combos]
 
 Uses the configuration of WORK/models/chosen.json (model kind and link-mask
 share) and the folds of train.py (by publication, same seed). The valid set is
@@ -15,8 +15,12 @@ not used: every scorer reaches MRR@5 = 1 on it, it cannot tell anything apart.
    shuffles); the drop of out-of-fold MRR@5 (all and hard) is the importance.
 Groups that encode the same signal hide each other (title and context both
 encode title similarity): "title+context" removes both.
+3. --combos (instead of 1 and 2): larger groups removed together, COMBOS -
+   title+link, title+context+link (what is left: author, year, venue) and
+   year+author+venue (what is left: link, title, context).
 
-Writes WORK/ablation_cv.csv and WORK/importance_cv.csv.
+Writes WORK/ablation_cv.csv and WORK/importance_cv.csv; with --combos,
+WORK/ablation_combos_cv.csv only.
 """
 
 from __future__ import annotations
@@ -34,6 +38,9 @@ from pairs import FEATURE_GROUPS, Pairs, mrr_at_5  # noqa: E402
 from models import score  # noqa: E402
 from train import cv_scores, fit, hard_groups, make_folds, oof_metrics  # noqa: E402
 
+COMBOS = {"title+link": ["title", "link"], "title+context+link": ["title", "context", "link"],
+          "year+author+venue": ["year", "author", "venue"]}
+
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -41,6 +48,7 @@ def main(argv=None) -> int:
     p.add_argument("--folds", type=int, default=5)
     p.add_argument("--repeats", type=int, default=3)
     p.add_argument("--seed", type=int, default=11)
+    p.add_argument("--combos", action="store_true", help="remove the COMBOS groups together, no importance")
     args = p.parse_args(argv)
     folder = args.work / "models"
     chosen = json.loads((folder / "chosen.json").read_text(encoding="utf-8"))["model"]
@@ -60,8 +68,11 @@ def main(argv=None) -> int:
           f"hard no link {base[2]:.4f}", flush=True)
     rows = [{"removed": "(none)", "features": len(features), "mrr5": base[0], "mrr5_nolink": base[1],
              "mrr5_hard": base[2], "drop": 0.0, "drop_nolink": 0.0, "drop_hard": 0.0}]
-    removals = dict(FEATURE_GROUPS)
-    removals["title+context"] = FEATURE_GROUPS["title"] + FEATURE_GROUPS["context"]  # both encode the title
+    if args.combos:
+        removals = {name: [f for g in groups for f in FEATURE_GROUPS[g]] for name, groups in COMBOS.items()}
+    else:
+        removals = dict(FEATURE_GROUPS)
+        removals["title+context"] = FEATURE_GROUPS["title"] + FEATURE_GROUPS["context"]  # both encode the title
     for group, fs in removals.items():
         keep = [f for f in features if f not in fs]
         if len(keep) == len(features):
@@ -70,12 +81,16 @@ def main(argv=None) -> int:
         rows.append({"removed": group, "features": len(keep), "mrr5": r[0], "mrr5_nolink": r[1], "mrr5_hard": r[2],
                      "drop": round(base[0] - r[0], 4), "drop_nolink": round(base[1] - r[1], 4),
                      "drop_hard": round(base[2] - r[2], 4)})
-        print(f"  without {group:13}: all {r[0]:.4f} ({base[0] - r[0]:+.4f}), no link {r[1]:.4f} "
+        print(f"  without {group:18}: all {r[0]:.4f} ({base[0] - r[0]:+.4f}), no link {r[1]:.4f} "
               f"({base[1] - r[1]:+.4f}), hard no link {r[2]:.4f} ({base[2] - r[2]:+.4f})", flush=True)
-    with open(args.work / "ablation_cv.csv", "w", encoding="utf-8", newline="") as f:
+    out = args.work / ("ablation_combos_cv.csv" if args.combos else "ablation_cv.csv")
+    with open(out, "w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0]))
         w.writeheader()
         w.writerows(rows)
+    if args.combos:
+        print(f"-> {out}")
+        return 0
 
     # permutation importance on the held-out folds
     models = {k: fit(kind, pairs, tr[fold != k], features, share, args.seed) for k in range(args.folds)}
